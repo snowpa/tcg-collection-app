@@ -74,7 +74,7 @@ const CR_PRODUCT = 'https://www.cardrush-pokemon.jp/product/';
  * @param {{name:string, number?:string, setCode?:string, rarity?:string, sealed?:boolean, hint?:string}} target
  *   hint は購入時の商品名やメモ（1ED・ミラーなどの手がかり）
  * @param {{id,name,model,url,price,stock}[]} items カードラッシュの検索結果
- * @returns {{quotes:{id:string, n:string, p:number, s:number, k:string, r?:string, g?:string, d?:boolean}[]} | {error:string}}
+ * @returns {{quotes:{id:string, n:string, p:number, s:number, k:string, r?:string, g?:string, d?:boolean}[], note?:string} | {error:string}}
  */
 export function matchQuotes(target, items) {
   const own = splitVariant(target.name);
@@ -89,20 +89,39 @@ export function matchQuotes(target, items) {
     return false; // レアリティが分かっているカードは、表記が一致する商品だけを使う（別版の誤マッチ防止）
   };
 
+  // 条件を1つずつ当てはめ、商品がなくなった条件を理由として返す
+  const uniq = (xs) => [...new Set(xs.filter(Boolean))].slice(0, 5).join('、');
   let list = items
     .map((it) => {
       const p = parseItem(it);
       const v = splitVariant(p.name);
       return { it, p, r: classifyRank(p.condRank), base: v.base, tokens: v.tokens };
     })
-    .filter((x) => x.it.price > 0)
-    .filter((x) => normName(x.base) === normName(own.base))
-    .filter((x) => !target.number || norm(x.p.number) === norm(target.number))
-    .filter((x) => !target.setCode || !knownModel(x.p.setCode) || knownModel(x.p.setCode) === norm(target.setCode))
-    .filter((x) => !!x.p.sealed === !!target.sealed)
-    .filter((x) => !x.tokens.some((t) => LANG.test(t)) || LANG.test(hint))
-    .filter(rarityOk);
-  if (!list.length) return { error: '同じカード（名前・番号・型番・レアリティが一致）の商品が見つかりません' };
+    .filter((x) => x.it.price > 0);
+  const step = (filter, reason) => {
+    const next = list.filter(filter);
+    if (!next.length) return reason(list);
+    list = next;
+    return '';
+  };
+  let note = '';
+  const fail = step((x) => normName(x.base) === normName(own.base),
+    (xs) => `カード名「${own.base}」と同じ名前の商品が見つかりません${xs.length ? `（検索結果の例: ${uniq(xs.map((x) => x.base))}）` : ''}`)
+    || step((x) => !target.number || norm(x.p.number) === norm(target.number),
+      (xs) => `番号「${target.number}」の商品が見つかりません（カードラッシュにある番号: ${uniq(xs.map((x) => x.p.number))}）`)
+    // 型番が分かる商品のうち一致するものが1つもなければ、型番違い（鑑定品の「その他」だけで通さない）
+    || step((x) => !target.setCode || knownModel(x.p.setCode) === norm(target.setCode)
+        || (!knownModel(x.p.setCode) && !list.some((y) => knownModel(y.p.setCode) && knownModel(y.p.setCode) !== norm(target.setCode))),
+      (xs) => `型番「${target.setCode}」の商品が見つかりません（カードラッシュにある型番: ${uniq(xs.map((x) => knownModel(x.p.setCode) && x.p.setCode))}）`)
+    || step((x) => !x.tokens.some((t) => LANG.test(t)) || LANG.test(hint),
+      () => '海外版の商品しか見つかりません')
+    || step(rarityOk,
+      (xs) => `レアリティ「${target.rarity}」の商品が見つかりません（カードラッシュにあるレアリティ: ${uniq(xs.map((x) => x.p.rarity || x.tokens.find(isRarityTok)))}）`);
+  if (fail) return { error: fail };
+  // 未開封かどうかは一致するものを優先し、なければもう一方の価格で代用する
+  const sameSeal = list.filter((x) => !!x.p.sealed === !!target.sealed);
+  if (sameSeal.length) list = sameSeal;
+  else note = target.sealed ? '未開封の販売がないため開封品の価格' : '開封品の販売がないため未開封品の価格';
 
   // 1ED／アンリミ、ミラー、記念版などのバリエーションは手がかりで選ぶ（なければ通常版）
   const has1st = (x) => x.tokens.some(isFirstTok);
@@ -135,7 +154,7 @@ export function matchQuotes(target, items) {
     ...(x.r.kind === 'graded' ? { g: x.r.grade, d: x.r.damaged } : {}),
   }));
   if (!quotes.length) return { error: '状態に合う商品が見つかりません' };
-  return { quotes };
+  return note ? { quotes, note } : { quotes };
 }
 
 /**

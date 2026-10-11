@@ -180,7 +180,8 @@ function marketResult(c) {
   const key = [MK.normGrade(c.grade), ratingOf(c), state.settings.psaPos].join('|');
   const hit = marketCache.get(c);
   if (hit && hit.key === key && hit.m === m) return hit.r;
-  const r = MK.priceFromQuotes(m.quotes, { grade: c.grade, rating: ratingOf(c), psaPos: state.settings.psaPos });
+  let r = MK.priceFromQuotes(m.quotes, { grade: c.grade, rating: ratingOf(c), psaPos: state.settings.psaPos });
+  if (!r.error && m.note) r = { ...r, basis: `${r.basis}（${m.note}）`, estimated: true };
   marketCache.set(c, { key, m, r });
   return r;
 }
@@ -1653,7 +1654,7 @@ async function fetchMarket(c) {
       throw new Error('カードラッシュ連携の拡張機能が古いため価格を取得できません。chrome://extensions で拡張機能を更新してください');
     }
     const m = MK.matchQuotes(target, r.items);
-    if (!m.error) return { ...base, quotes: m.quotes };
+    if (!m.error) return { ...base, quotes: m.quotes, ...(m.note ? { note: m.note } : {}) };
     last = m;
     if (/特定できません/.test(m.error)) break; // より短い検索語では同名カードがさらに混ざる
   }
