@@ -438,3 +438,5 @@ tr .tick { position: static; display: inline-block; border-color: var(--line2); 
 .sell-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 2px 0; }
 .sell-line strong { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
 .sell-sub { display: block; text-align: right; font-weight: 400; }
+.gain { font-size: .7rem; font-weight: 700; margin-left: 4px; }
+td .gain { margin-left: 0; }

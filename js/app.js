@@ -193,6 +193,16 @@ const marketValue = (c) => (marketUnit(c) ?? 0) * qty(c);
 const sellPct = () => { const r = num(state.settings.sellRate); return r > 0 && r <= 100 ? r : 70; };
 const sellUnit = (c) => { const m = marketUnit(c); return m === null ? null : Math.round((m * sellPct()) / 1000) * 10; };
 const sellValue = (c) => (sellUnit(c) ?? 0) * qty(c);
+// 購入価格に対する相場の上昇率（%）。購入価格がない・相場がないときは null
+const gainPct = (c) => {
+  const m = marketUnit(c);
+  const p = num(c.purchasePrice);
+  return m === null || !(p > 0) ? null : Math.round(((m - p) / p) * 100);
+};
+const gainHtml = (c) => {
+  const g = gainPct(c);
+  return g === null ? '' : `<small class="gain ${g >= 0 ? 'up' : 'down'}" title="購入価格 ${yen(c.purchasePrice)} からの変化">${g >= 0 ? '+' : ''}${g.toLocaleString('ja-JP')}%</small>`;
+};
 // 自動で選んだ相場のうち、確認したほうがよいもの（理由を返す。問題なければ空文字）
 function marketCheck(c) {
   if (marketUnit(c) === null) return '';
@@ -901,7 +911,7 @@ function tileHtml(c) {
       <div class="tile-name">${esc(title(c))}</div>
       <div class="tile-meta">${esc([c.rarity, c.setCode, c.number].filter(Boolean).join(' · ') || '\u00a0')}</div>
       <div class="tile-price">${c.status !== 'wish' && marketUnit(c) !== null
-        ? `<span title="相場（カードラッシュ販売価格）${marketResult(c).estimated ? '・推定' : ''} ／ 売却概算 ${yen(sellUnit(c))}"><small class="mk-label">相場</small>${yen(marketUnit(c))}${marketResult(c).estimated ? '<small class="mk-est">推定</small>' : ''}${marketCheck(c) ? '<small class="mk-est">要確認</small>' : ''}</span>`
+        ? `<span title="相場（カードラッシュ販売価格） ／ 売却概算 ${yen(sellUnit(c))}"><small class="mk-label">相場</small>${yen(marketUnit(c))}${gainHtml(c)}</span>`
         : `<span>${yen(c.status === 'wish' ? c.targetPrice || null : c.purchasePrice || null)}</span>`}
         ${issues ? `<span class="warn-text" title="${esc(condSummary(c))}">要注意 ${issues}</span>` : ''}</div>
     </div>
@@ -1200,7 +1210,7 @@ function rowHtml(c) {
     <td>${cond.overall ? `<span class="badge rating r-${esc(cond.overall)}">${esc(cond.overall)}</span>` : '<span class="muted small">未評価</span>'}</td>
     <td class="small">${esc(activeDefects(cond).map(([k, l]) => `${l}(${SEVERITY_LABEL[cond.defects[k]]})`).join('、'))}</td>
     <td class="r">${qty(c)}</td><td class="r">${yen(c.purchasePrice || null)}</td>
-    <td class="r">${marketUnit(c) !== null ? `${yen(marketUnit(c))}${marketResult(c).estimated ? '<br><small class="mk-est">推定</small>' : ''}${marketCheck(c) ? '<br><small class="mk-est">要確認</small>' : ''}` : marketError(c) ? '<small class="muted">取得不可</small>' : ''}</td>
+    <td class="r">${marketUnit(c) !== null ? `${yen(marketUnit(c))}${gainPct(c) !== null ? `<br>${gainHtml(c)}` : ''}` : marketError(c) ? '<small class="muted">取得不可</small>' : ''}</td>
     <td class="r">${sellUnit(c) !== null ? yen(sellUnit(c)) : ''}</td>
     <td class="small">${esc(c.purchaseDate || '')}</td></tr>`;
 }
