@@ -41,28 +41,73 @@ export async function getToken(scope, clientId) {
       client_id: clientId,
       scope,
       callback: (resp) => {
-        if (resp.error) { reject(new Error(resp.error_description || resp.error)); return; }
+        if (resp.error) { reject(new Error(authErrorMessage(resp.error, resp.error_description))); return; }
+        // 同意画面で権限のチェックを外して許可された場合はトークンを使わない
+        if (!window.google.accounts.oauth2.hasGrantedAllScopes(resp, scope)) {
+          reject(new Error(`${scopeLabel(scope)}の権限が許可されていません。もう一度実行し、Google の確認画面で「${scopeLabel(scope)}」にチェックを入れて「続行」を押してください。`));
+          return;
+        }
         tokens[scope] = { token: resp.access_token, exp: Date.now() + Number(resp.expires_in || 3600) * 1000 };
+        needConsent.delete(scope);
         resolve(resp.access_token);
       },
-      error_callback: (err) => reject(new Error(err?.message || err?.type || '認証がキャンセルされました')),
+      error_callback: (err) => reject(new Error(
+        err?.type === 'popup_closed' ? 'Google のログイン画面が閉じられました'
+          : err?.type === 'popup_failed_to_open' ? 'ログイン用のポップアップがブロックされました。ブラウザでこのサイトのポップアップを許可してください'
+            : err?.message || err?.type || '認証がキャンセルされました',
+      )),
     });
-    client.requestAccessToken({ prompt: '' });
+    // 権限不足で失敗した後は、権限の確認画面を必ず表示させる
+    client.requestAccessToken({ prompt: needConsent.has(scope) ? 'consent' : '' });
   });
+}
+
+const needConsent = new Set();
+const scopeLabel = (scope) => (scope === SCOPES.gmail ? 'Gmail の閲覧' : scope === SCOPES.drive ? 'Google ドライブのファイル' : '必要');
+
+function authErrorMessage(code, desc) {
+  if (code === 'access_denied') return 'Google へのアクセスが拒否されました。OAuth 同意画面の「テストユーザー」に、ログインに使う Gmail アドレスが追加されているか確認してください';
+  if (code === 'invalid_client' || code === 'unauthorized_client') return 'OAuth クライアントID が正しくありません。設定画面のクライアントIDを確認してください';
+  if (/origin/i.test(desc || '')) return `このサイト（${location.origin}）が OAuth クライアントの「承認済みの JavaScript 生成元」に登録されていません`;
+  return `Google ログインエラー: ${desc || code}`;
+}
+
+// Google API のエラー応答を、原因と対処が分かる日本語にする
+function apiErrorMessage(status, err, url) {
+  const msg = err?.message || '';
+  const reasons = [
+    ...(err?.errors || []).map((e) => e.reason),
+    ...(err?.details || []).map((d) => d.reason),
+    err?.status,
+  ].filter(Boolean).join(' ');
+  const api = String(url).includes('gmail') ? 'Gmail API' : 'Google Drive API';
+  if (/SERVICE_DISABLED|accessNotConfigured/i.test(reasons) || /has not been used|is disabled/i.test(msg)) {
+    return `${api} が有効になっていません。Google Cloud Console の「APIとサービス → ライブラリ」で ${api} を有効にし、数分待ってから再実行してください。`;
+  }
+  if (/SCOPE_INSUFFICIENT|insufficientPermissions/i.test(reasons) || /insufficient authentication scopes/i.test(msg)) {
+    return `${api} を使う権限が許可されていません。もう一度実行すると Google の確認画面が出るので、すべての項目にチェックを入れて許可してください。`;
+  }
+  if (status === 401) return 'Google のログインの有効期限が切れました。もう一度実行してください。';
+  if (status === 429 || /rateLimitExceeded|RESOURCE_EXHAUSTED/i.test(reasons)) return 'Google API の利用回数の上限に達しました。少し時間をおいて再実行してください。';
+  return `Google API エラー（${status}）: ${msg || reasons || '詳細不明'}`;
 }
 
 async function gfetch(url, token, opts = {}) {
   const res = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${token}`, ...(opts.headers || {}) } });
-  if (res.status === 401) {
-    // トークン失効時は次回再取得させる
-    Object.keys(tokens).forEach((k) => { if (tokens[k].token === token) delete tokens[k]; });
+  if (res.ok) return res;
+  let err = null;
+  try { err = (await res.json()).error; } catch { /* 本文なし */ }
+  const reasons = JSON.stringify(err || {});
+  if (res.status === 401 || res.status === 403) {
+    // トークンを破棄し、権限不足なら次回は確認画面から出し直す
+    Object.keys(tokens).forEach((k) => {
+      if (tokens[k].token !== token) return;
+      delete tokens[k];
+      if (res.status === 403 && /SCOPE_INSUFFICIENT|insufficient/i.test(reasons)) needConsent.add(k);
+    });
   }
-  if (!res.ok) {
-    let msg = `${res.status}`;
-    try { msg += ' ' + ((await res.json()).error?.message || ''); } catch { /* 本文なし */ }
-    throw new Error(`Google API エラー: ${msg}`);
-  }
-  return res;
+  console.error('Google API エラー', res.status, err);
+  throw new Error(apiErrorMessage(res.status, err, url));
 }
 
 // ---------- Gmail ----------
