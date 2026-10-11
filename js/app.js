@@ -86,6 +86,7 @@ const DEFAULT_SETTINGS = {
   clientId: '',
   geminiKey: '',
   geminiModel: 'gemini-2.5-flash',
+  psaPos: 'mid', // PSA の相場の割合の目安のどこを使うか（low / mid / high）
   gameName: 'ポケモンカード',
   autoAi: false,
   keywordFilter: true,
@@ -284,7 +285,8 @@ function wantedRankOf(c) {
 }
 
 // 相場の算出条件。これが変わったら相場を取り直す
-const marketSig = (c) => [c.name, c.number, c.setCode, c.rarity, MK.normGrade(c.grade), c.sealed ? 1 : 0, wantedRankOf(c)].join('|');
+const marketSig = (c) => [c.name, c.number, c.setCode, c.rarity, MK.normGrade(c.grade), c.sealed ? 1 : 0, wantedRankOf(c),
+  /^PSA/.test(MK.normGrade(c.grade)) ? state.settings.psaPos : ''].join('|');
 
 function newCard(preset = {}) {
   return {
@@ -1538,6 +1540,20 @@ function viewSettings() {
     </section>
 
     <section class="panel">
+      <h2>相場の計算</h2>
+      <p class="muted small">PSA 鑑定品の相場は、カードラッシュの PSA10 の販売価格に次の割合をかけて求めます（PSA10 の販売がない場合は同じグレードの販売価格、なければ未鑑定の価格）。</p>
+      <div class="table-wrap"><table class="table psa-table"><thead><tr><th>グレード</th><th class="r">PSA10 を 100% としたときの目安</th></tr></thead>
+        <tbody>${Object.keys(MK.PSA_RATIO).sort((a, b) => b - a).map((n) => {
+          const [lo, hi] = MK.PSA_RATIO[n];
+          const f = (r) => `${Math.round(r * 1000) / 10}%`;
+          return `<tr><td>PSA ${n}</td><td class="r">${lo === hi ? f(lo) : `${f(lo)} 〜 ${f(hi)}`}（使用: ${f(MK.psaRatio(n, s.psaPos))}）</td></tr>`;
+        }).join('')}</tbody></table></div>
+      <label class="fld inline"><span>目安の幅のどこを使うか</span>
+        <select data-setting="psaPos">${Object.entries(MK.PSA_POS_LABEL).map(([v, l]) => opt(v, l, s.psaPos)).join('')}</select></label>
+      <p class="muted small">変更後はホームの「相場を更新」で PSA 鑑定品の相場が取り直されます。</p>
+    </section>
+
+    <section class="panel">
       <h2>AI（Gemini）</h2>
       <div class="grid2">
         <label class="fld"><span>Gemini API キー</span><input type="password" data-setting="geminiKey" value="${esc(s.geminiKey)}" autocomplete="off"></label>
@@ -1652,6 +1668,7 @@ async function fetchMarket(c) {
   const target = {
     name: c.name, number: c.number, setCode: c.setCode, rarity: c.rarity, grade: c.grade, sealed: c.sealed, rank: wantedRankOf(c),
     hint: [c.rawTitle, c.memo, c.condition].join(' '), // 1ED・ミラーなどの手がかり
+    psaPos: state.settings.psaPos,
   };
   const base = { rank: target.rank, sig: marketSig(c), at: nowIso() };
   if (!c.name) return { ...base, error: 'カード名がありません' };
@@ -2383,7 +2400,7 @@ document.addEventListener('change', (e) => {
     state.settings[k] = el.type === 'checkbox' ? el.checked : el.type === 'number' ? num(el.value) : el.value.trim();
     saveSettings();
     if (k === 'clientId' && state.settings.clientId) G.loadGis().catch(() => {});
-    if (['clientId', 'autoDrive'].includes(k)) render();
+    if (['clientId', 'autoDrive', 'psaPos'].includes(k)) render();
     return;
   }
   if (el.dataset.source !== undefined) {

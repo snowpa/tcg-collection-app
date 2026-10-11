@@ -442,3 +442,6 @@ tr .tick { position: static; display: inline-block; border-color: var(--line2); 
 .market-status[hidden] { display: none; }
 .market-status .bar { flex: 1 1 120px; }
 @media (min-width: 860px) { .market-status { bottom: 20px; } }
+.psa-table { min-width: 0; }
+.psa-table td, .psa-table th { padding: 5px 10px; }
+.fld.inline > select { width: auto; }

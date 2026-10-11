@@ -10,6 +10,21 @@ export const normName = (s) => norm(s).replace(/デルタ種/g, '').replace(/[�
 export const RANK_FACTOR = { normal: 1, 'A-': 0.9, B: 0.75, C: 0.5 };
 export const RANK_LABEL = { normal: '無印（美品）', 'A-': '状態A-', B: '状態B', C: '状態C' };
 
+// PSA のグレード別の相場の目安（PSA10 の価格を 100% としたときの [下限, 上限]）
+export const PSA_RATIO = {
+  10: [1, 1], 9: [0.4, 0.6], 8: [0.2, 0.35], 7: [0.12, 0.2], 6: [0.08, 0.15],
+  5: [0.06, 0.1], 4: [0.04, 0.07], 3: [0.03, 0.05], 2: [0.02, 0.04], 1: [0.015, 0.03],
+};
+export const PSA_POS_LABEL = { low: '下限', mid: '中央', high: '上限' };
+
+// 目安の幅のどこを使うか（low=下限 / mid=中央 / high=上限）
+export function psaRatio(n, pos = 'mid') {
+  const [lo, hi] = PSA_RATIO[n];
+  return pos === 'low' ? lo : pos === 'high' ? hi : (lo + hi) / 2;
+}
+
+const pct = (r) => `${Math.round(r * 1000) / 10}%`;
+
 // 「状態B」「PSA10鑑定済」「※状態難/PSA10鑑定済」などを分類する
 export function classifyRank(rank) {
   const r = String(rank || '').normalize('NFKC').toUpperCase();
@@ -52,7 +67,8 @@ const round10 = (n) => Math.round(n / 10) * 10;
 /**
  * 検索結果から相場を選ぶ
  * @param {{name:string, number?:string, setCode?:string, rarity?:string, grade?:string, sealed?:boolean,
- *          rank:'normal'|'A-'|'B'|'C', hint?:string}} target hint は購入時の商品名やメモ（1ED・ミラーなどの手がかり）
+ *          rank:'normal'|'A-'|'B'|'C', hint?:string, psaPos?:'low'|'mid'|'high'}} target
+ *   hint は購入時の商品名やメモ（1ED・ミラーなどの手がかり）、psaPos は PSA の割合の目安のどこを使うか
  * @param {{id,name,model,url,price,stock}[]} items カードラッシュの検索結果
  * @returns {{price:number, basis:string, estimated:boolean, itemId:string, url:string, listing:string} | {error:string}}
  */
@@ -117,6 +133,21 @@ export function estimate(target, items) {
   // 鑑定品: 同じ鑑定の販売価格（状態難は除く）
   const grade = normGrade(target.grade);
   let note = '';
+  // PSA: PSA10 の販売価格 × グレード別の割合
+  const psa = grade.match(/^PSA(\d+(?:\.\d+)?)$/);
+  if (psa) {
+    const n = Math.max(1, Math.min(10, Math.floor(Number(psa[1]))));
+    const p10 = best(list.filter((x) => x.r.kind === 'graded' && x.r.grade === 'PSA10' && !x.r.damaged));
+    if (p10 && n === 10) return out(p10, p10.it.price, 'PSA10鑑定済の販売価格');
+    if (p10) {
+      const pos = target.psaPos || 'mid';
+      const [lo, hi] = PSA_RATIO[n];
+      const ratio = psaRatio(n, pos);
+      return out(p10, round10(p10.it.price * ratio),
+        `PSA10 ${p10.it.price.toLocaleString('ja-JP')}円 × ${pct(ratio)}（PSA${n}の目安 ${pct(lo)}〜${pct(hi)}の${PSA_POS_LABEL[pos]}）`, true);
+    }
+    // PSA10 の販売がなければ、同じグレードの販売価格 → 未鑑定の価格の順で使う
+  }
   if (grade) {
     const hit = best(list.filter((x) => x.r.kind === 'graded' && x.r.grade === grade && !x.r.damaged));
     if (hit) return out(hit, hit.it.price, `${grade}鑑定済の販売価格`);
