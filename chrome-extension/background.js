@@ -81,6 +81,9 @@ function parseCardrushList(html) {
     const model = crText((block.match(/class="model_number_value">([^<]*)</) || [])[1] || '');
     const img = block.match(/<img src="([^"]+)"(?: data-x2="([^"]+)")?/) || [];
     const thumb = img[2] || img[1] || '';
+    // 販売価格（税込）と在庫数。売り切れは在庫表示がない
+    const price = Number(((block.match(/class="figure">([\d,]+)円/) || [])[1] || '0').replace(/,/g, ''));
+    const stockMatch = block.match(/class="stock">[^<\d]*(\d+)/);
     items.push({
       id: m[1],
       name,
@@ -88,6 +91,8 @@ function parseCardrushList(html) {
       thumb,
       image: crOriginalImage(thumb),
       url: `${CR_BASE}/product/${m[1]}`,
+      price,
+      stock: stockMatch ? Number(stockMatch[1]) : 0,
       // 売り切れは在庫数の表示がなく、サムネイルに「SOLD OUT」（16進で 534f4c44204f5554）が重ねられる
       soldOut: /534f4c44204f5554/i.test(thumb) || !/class="stock"/.test(block),
     });

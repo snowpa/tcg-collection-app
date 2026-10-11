@@ -1,8 +1,8 @@
 // オフライン用 Service Worker（ネットワーク優先・失敗時にキャッシュ）
-const CACHE = 'tcg-collection-v10';
+const CACHE = 'tcg-collection-v11';
 const ASSETS = [
   './', './index.html', './style.css', './manifest.json', './icon.svg',
-  './js/app.js', './js/db.js', './js/google.js', './js/parser.js', './js/gemini.js', './js/chart.js', './js/cardrush.js',
+  './js/app.js', './js/db.js', './js/google.js', './js/parser.js', './js/gemini.js', './js/chart.js', './js/cardrush.js', './js/market.js',
 ];
 
 self.addEventListener('install', (e) => {

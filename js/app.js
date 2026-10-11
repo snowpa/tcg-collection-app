@@ -5,6 +5,7 @@ import * as P from './parser.js';
 import * as AI from './gemini.js';
 import { lineChart } from './chart.js';
 import * as CR from './cardrush.js';
+import * as MK from './market.js';
 
 // ================= 共通ユーティリティ =================
 
@@ -155,6 +156,7 @@ const state = {
   navIds: [],
   cr: null, // カードラッシュ検索ダイアログの状態
   crWalk: false, // 選択したカードを順にカードラッシュで照合中
+  marketRun: null, // 相場の一括更新の進捗
   editingSet: null,
   dirty: false,
   localHandle: null,
@@ -168,6 +170,16 @@ const qty = (c) => Math.max(1, Math.floor(num(c.quantity)) || 1);
 const title = (c) => c.name || c.rawTitle || '(名称未設定)';
 
 const cardCost = (c) => num(c.purchasePrice) * qty(c);
+// カードラッシュ販売価格ベースの相場（1枚あたり）。未取得・取得失敗は null
+const marketUnit = (c) => (c.market && c.market.price > 0 ? c.market.price : null);
+const marketValue = (c) => (marketUnit(c) ?? 0) * qty(c);
+// 自動で選んだ相場のうち、確認したほうがよいもの（理由を返す。問題なければ空文字）
+function marketCheck(c) {
+  if (marketUnit(c) === null) return '';
+  if (!c.number) return '番号がないため名前だけで商品を特定しました';
+  if (num(c.purchasePrice) > 0 && c.market.price >= num(c.purchasePrice) * 10) return '購入額の10倍以上です（別版の可能性）';
+  return '';
+}
 const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
 
 const setKey = (c) => String(c.setCode || c.setName || '').trim().toLowerCase();
@@ -253,6 +265,26 @@ function condSummary(c) {
   const ds = activeDefects(cond).map(([k, l]) => `${l}(${SEVERITY_LABEL[cond.defects[k]]})`);
   return ds.length ? ds.join('・') : cond.inspectedAt ? '目立つ欠陥なし' : '';
 }
+
+// 手持ちの状態 → 相場に使うカードラッシュの状態ランク（normal=無印 / A- / B / C）
+function wantedRankOf(c) {
+  const cond = condOf(c);
+  const o = cond.overall;
+  if (o === 'S' || o === 'A') return 'normal';
+  if (o === 'B') return 'A-';
+  if (o === 'C') return 'B';
+  if (o === 'D') return 'C';
+  // 未評価なら欠陥の程度から判断する
+  const sev = activeDefects(cond).map(([k]) => cond.defects[k]);
+  const bent = ['crease', 'dent'].some((k) => ['moderate', 'heavy'].includes(cond.defects[k]));
+  if (sev.includes('heavy') || bent) return 'C';
+  if (sev.includes('moderate')) return 'B';
+  if (sev.includes('light')) return 'A-';
+  return 'normal';
+}
+
+// 相場の算出条件。これが変わったら相場を取り直す
+const marketSig = (c) => [c.name, c.number, c.setCode, c.rarity, MK.normGrade(c.grade), c.sealed ? 1 : 0, wantedRankOf(c)].join('|');
 
 function newCard(preset = {}) {
   return {
@@ -536,6 +568,7 @@ const CSV_COLUMNS = [
   ['購入日', (c) => c.purchaseDate], ['金額', (c) => c.purchasePrice], ['購入先', (c) => c.shop],
   ['目標価格', (c) => c.targetPrice], ['タグ', (c) => (c.tags || []).join(' ')],
   ['メモ', (c) => c.memo], ['メールリンク', (c) => c.mailLink],
+  ['相場', (c) => marketUnit(c) ?? ''], ['相場の根拠', (c) => c.market?.error || c.market?.basis || ''], ['相場取得日', (c) => (c.market?.at || '').slice(0, 10)], ['相場の確認', (c) => marketCheck(c)],
   // 状態チェック
   ['未開封', (c) => (c.sealed ? '○' : '')], ['状態評価', (c) => condOf(c).overall], ['点検日', (c) => condOf(c).inspectedAt],
   ['センタリング(表)', (c) => { const r = centeringOf(condOf(c).centering.front, 'front'); return r ? centeringText(r) : ''; }],
@@ -852,7 +885,9 @@ function tileHtml(c) {
     <div class="tile-body">
       <div class="tile-name">${esc(title(c))}</div>
       <div class="tile-meta">${esc([c.rarity, c.setCode, c.number].filter(Boolean).join(' · ') || '\u00a0')}</div>
-      <div class="tile-price"><span>${yen(c.status === 'wish' ? c.targetPrice || null : c.purchasePrice || null)}</span>
+      <div class="tile-price">${c.status !== 'wish' && marketUnit(c) !== null
+        ? `<span title="相場（カードラッシュ販売価格）${c.market.estimated ? '・推定' : ''}"><small class="mk-label">相場</small>${yen(marketUnit(c))}${c.market.estimated ? '<small class="mk-est">推定</small>' : ''}${marketCheck(c) ? '<small class="mk-est">要確認</small>' : ''}</span>`
+        : `<span>${yen(c.status === 'wish' ? c.targetPrice || null : c.purchasePrice || null)}</span>`}
         ${issues ? `<span class="warn-text" title="${esc(condSummary(c))}">要注意 ${issues}</span>` : ''}</div>
     </div>
   </button>`;
@@ -899,6 +934,14 @@ function viewDashboard() {
       </div></section>`;
   }
   const cost = sum(owned, cardCost);
+  const priced = owned.filter((c) => marketUnit(c) !== null);
+  const market = sum(priced, marketValue);
+  const pricedCost = sum(priced, cardCost);
+  const failed = owned.filter((c) => c.market?.error).length;
+  const checks = priced.filter((c) => marketCheck(c));
+  const checkValue = sum(checks, marketValue);
+  const lastAt = owned.map((c) => c.market?.at || '').sort().pop();
+  const topMarket = [...priced].sort((a, b) => marketValue(b) - marketValue(a)).slice(0, 5);
   const checked = owned.filter((c) => condOf(c).inspectedAt || condOf(c).overall).length;
   // 状態評価の内訳
   const dist = COND_RATINGS.map(([k, l]) => [k, l, owned.filter((c) => condOf(c).overall === k).length]);
@@ -918,7 +961,13 @@ function viewDashboard() {
   return `
     ${backupNotice()}
     <section class="stats">
-      <div class="stat big"><span class="label">購入総額</span><span class="val">${yen(cost)}</span></div>
+      <div class="stat big"><span class="label">相場総額（カードラッシュ販売価格）</span>
+        <span class="val">${priced.length ? yen(market) : '-'}</span>
+        <span class="small">${priced.length
+          ? `${priced.length} / ${owned.length}種類で算出 ・ 同じカードの購入額 ${yen(pricedCost)}（<span class="${market - pricedCost >= 0 ? 'up' : 'down'}">${market - pricedCost >= 0 ? '+' : ''}${yen(market - pricedCost)}</span>）`
+          : '下の「相場を更新」で取得できます'}</span>
+        ${checks.length ? `<span class="small">うち<button class="link" data-action="filter-cond" data-cond="market-check">要確認 ${checks.length}件</button> ${yen(checkValue)}（確認済みの分だけなら ${yen(market - checkValue)}）</span>` : ''}
+        <span class="muted small">購入総額 ${yen(cost)}</span></div>
       <div class="stat"><span class="label">所持枚数</span><span class="val">${sum(owned, qty)}枚</span><span class="muted small">${owned.length}種類</span></div>
       <div class="stat"><span class="label">状態チェック済み</span><span class="val">${checked} / ${owned.length}</span></div>
       <div class="stat"><span class="label">ほしいもの</span><span class="val">${live('wish').length}件</span></div>
@@ -932,6 +981,19 @@ function viewDashboard() {
             <span class="rank-name">${esc(title(c))}<small>${esc(condSummary(c))}</small></span></button></li>`).join('')}</ul>`
         : '<p class="muted small">折れ・へこみ、目立つ白かけなどがあるカードがここに表示されます。</p>'}</section>
     </div>
+    <section class="panel">
+      <div class="panel-head"><h2>相場（カードラッシュ販売価格）</h2>
+        <div class="row" style="margin:0">
+          <button class="btn small" data-action="market-all">相場を更新</button>
+          <button class="btn small ghost" data-action="market-all" data-force="1" title="24時間以内に取得済みのカードも取り直す">すべて取り直す</button>
+        </div></div>
+      <p class="muted small">手持ちの状態に合わせて、カードラッシュの販売価格（無印＝美品／状態A-／B／C／鑑定品）を選んで相場にします。総合評価 S・A→無印、B→状態A-、C→状態B、D→状態C（未評価は欠陥チェックから判断）。該当する状態の商品がないときは別の状態の価格から換算した「推定」です。
+        ${lastAt ? `最終更新 ${esc(new Date(lastAt).toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' }))}。` : ''}
+        ${failed ? `<button class="link" data-action="filter-cond" data-cond="market-error">取得できなかったカード ${failed}件</button>（カードラッシュで照合して番号・型番を入れると取得できます）` : ''}</p>
+      ${topMarket.length ? `<ol class="rank">${topMarket.map((c) => `<li><button class="rank-row" data-action="open-card" data-id="${c.id}">
+        <span class="rank-name">${esc(title(c))}${marketCheck(c) ? ' <span class="badge warn">要確認</span>' : ''}<small>${esc(marketCheck(c) || c.market.basis)}</small></span>
+        <span class="rank-val">${yen(marketValue(c))}${qty(c) > 1 ? `<small class="muted"> (${qty(c)}枚)</small>` : ''}</span></button></li>`).join('')}</ol>` : ''}
+    </section>
     <section class="panel"><h2>購入額の推移</h2><div id="asset-chart"></div></section>
     <section class="panel"><div class="panel-head"><h2>最近追加したカード</h2>
       <button class="link" data-action="nav" data-view="collection">すべて見る</button></div>
@@ -944,10 +1006,11 @@ const COND_FILTERS = [
   ...COND_RATINGS.map(([k, l]) => [k, `評価 ${l}`]),
   ['unrated', '未評価'], ['issues', '欠陥あり'], ['crease', '折れ・へこみあり'], ['unchecked-items', '欠陥に未確認の項目あり'], ['center-ng', 'センタリング基準外'],
   ['sealed', '未開封'], ['opened', '未開封以外'],
+  ['market-none', '相場が未取得'], ['market-error', '相場を取得できなかったカード'], ['market-check', '相場が要確認'],
 ];
 const SORTS = [
   ['added-desc', '登録が新しい順'], ['added-asc', '登録が古い順'], ['purchase-desc', '購入日が新しい順'], ['purchase-asc', '購入日が古い順'],
-  ['price-desc', '購入価格が高い順'], ['price-asc', '購入価格が低い順'], ['cond', '状態が良い順'], ['name', '名前順'], ['number', 'セット・番号順'],
+  ['market-desc', '相場が高い順'], ['market-asc', '相場が低い順'], ['price-desc', '購入価格が高い順'], ['price-asc', '購入価格が低い順'], ['cond', '状態が良い順'], ['name', '名前順'], ['number', 'セット・番号順'],
 ];
 const setLabelOf = (c) => [c.setCode, c.setName].filter(Boolean).join(' ') || 'セット未設定';
 const numOf = (c) => P.parseCardNumber(c.number)?.n ?? 9e9;
@@ -975,6 +1038,9 @@ function filteredCards() {
       if (f.cond === 'crease') return ['crease', 'dent'].some((k) => isDefect(cond.defects[k]));
       if (f.cond === 'unchecked-items') return uncheckedDefects(cond).length > 0;
       if (f.cond === 'sealed') return !!c.sealed;
+      if (f.cond === 'market-none') return !c.market;
+      if (f.cond === 'market-error') return !!c.market?.error;
+      if (f.cond === 'market-check') return !!marketCheck(c);
       if (f.cond === 'opened') return !c.sealed;
       if (f.cond === 'center-ng') return ['front', 'back'].some((k) => centeringOf(cond.centering[k], k)?.ok === false);
       return cond.overall === f.cond;
@@ -989,6 +1055,9 @@ function filteredCards() {
     'purchase-asc': (a, b) => String(a.purchaseDate || '9999').localeCompare(String(b.purchaseDate || '9999')),
     'price-desc': (a, b) => num(b.purchasePrice) - num(a.purchasePrice),
     'price-asc': (a, b) => num(a.purchasePrice) - num(b.purchasePrice),
+    // 相場未取得は常に最後
+    'market-desc': (a, b) => (marketUnit(b) ?? -1) - (marketUnit(a) ?? -1),
+    'market-asc': (a, b) => (marketUnit(a) ?? 9e12) - (marketUnit(b) ?? 9e12),
     cond: (a, b) => rank.get(a.id) - rank.get(b.id),
     name: (a, b) => title(a).localeCompare(title(b), 'ja'),
     number: (a, b) => setKey(a).localeCompare(setKey(b)) || numOf(a) - numOf(b),
@@ -1071,7 +1140,7 @@ function renderResults({ keep = false } = {}) {
   const fb = $('[data-action="toggle-filters"]');
   if (fb) fb.innerHTML = `絞り込み${chips.length ? `<span class="count">${chips.length}</span>` : ''}`;
 
-  const summary = `<p class="muted small result-sum">${list.length}種類 / ${sum(list, qty)}枚 ・ 購入額 ${yen(sum(list, cardCost))}</p>`;
+  const summary = `<p class="muted small result-sum">${list.length}種類 / ${sum(list, qty)}枚 ・ 購入額 ${yen(sum(list, cardCost))}${list.some((c) => marketUnit(c) !== null) ? ` ・ 相場 ${yen(sum(list, marketValue))}` : ''}</p>`;
   moreObserver?.disconnect();
   if (!list.length) {
     el.innerHTML = live('owned').length
@@ -1089,7 +1158,7 @@ function renderResults({ keep = false } = {}) {
     };
     el.innerHTML = summary + `<div class="table-wrap"><table class="table">
       <thead><tr>${state.selectMode ? '<th></th>' : ''}<th></th>${sortTh('カード', ['name'])}${sortTh('セット / 番号', ['number'])}<th>鑑定</th>
-        ${sortTh('状態', ['cond'])}<th>欠陥</th><th class="r">枚数</th>${sortTh('購入価格', ['price-desc', 'price-asc'], 'r')}${sortTh('購入日', ['purchase-desc', 'purchase-asc'])}</tr></thead>
+        ${sortTh('状態', ['cond'])}<th>欠陥</th><th class="r">枚数</th>${sortTh('購入価格', ['price-desc', 'price-asc'], 'r')}${sortTh('相場', ['market-desc', 'market-asc'], 'r')}${sortTh('購入日', ['purchase-desc', 'purchase-asc'])}</tr></thead>
       <tbody id="rows"></tbody></table></div><div id="more" class="more" aria-live="polite"></div>`;
   } else {
     el.innerHTML = summary + `<div id="rows" class="grid d-${esc(f.density)}"></div><div id="more" class="more" aria-live="polite"></div>`;
@@ -1112,14 +1181,16 @@ function rowHtml(c) {
     <td>${esc(c.grade !== '未鑑定' ? c.grade : '')}${c.sealed ? ' <span class="badge sealed-inline">未開封</span>' : ''}</td>
     <td>${cond.overall ? `<span class="badge rating r-${esc(cond.overall)}">${esc(cond.overall)}</span>` : '<span class="muted small">未評価</span>'}</td>
     <td class="small">${esc(activeDefects(cond).map(([k, l]) => `${l}(${SEVERITY_LABEL[cond.defects[k]]})`).join('、'))}</td>
-    <td class="r">${qty(c)}</td><td class="r">${yen(c.purchasePrice || null)}</td><td class="small">${esc(c.purchaseDate || '')}</td></tr>`;
+    <td class="r">${qty(c)}</td><td class="r">${yen(c.purchasePrice || null)}</td>
+    <td class="r">${marketUnit(c) !== null ? `${yen(marketUnit(c))}${c.market.estimated ? '<br><small class="mk-est">推定</small>' : ''}${marketCheck(c) ? '<br><small class="mk-est">要確認</small>' : ''}` : c.market?.error ? '<small class="muted">取得不可</small>' : ''}</td>
+    <td class="small">${esc(c.purchaseDate || '')}</td></tr>`;
 }
 
 function groupHeadHtml(c, isList) {
   const n = state.groupCounts.get(setKey(c)) || 0;
   const label = `${esc(setLabelOf(c))} <span class="muted small">${n}種類</span>`;
   return isList
-    ? `<tr class="group-row"><td colspan="${state.selectMode ? 11 : 10}">${label}</td></tr>`
+    ? `<tr class="group-row"><td colspan="${state.selectMode ? 12 : 11}">${label}</td></tr>`
     : `<h3 class="group-head">${label}</h3>`;
 }
 
@@ -1173,6 +1244,7 @@ function renderBulkBar() {
     <button class="btn small ghost" data-action="select-all">表示中の${state.resultIds.length}件をすべて選択</button>
     ${n ? '<button class="btn small ghost" data-action="select-none">選択解除</button>' : ''}
     <span class="spacer"></span>
+    <button class="btn small" data-action="market-selected" ${n ? '' : 'disabled'} title="選択したカードの相場をカードラッシュの販売価格から取得">💴 相場を更新</button>
     <button class="btn small" data-action="cr-walk" ${n ? '' : 'disabled'} title="選択したカードを1枚ずつカードラッシュで照合">🔎 カードラッシュで照合</button>
     <button class="btn small" data-action="bulk-edit" ${n ? '' : 'disabled'}>一括編集</button>
     <button class="btn small danger" data-action="bulk-delete" ${n ? '' : 'disabled'}>削除</button>
@@ -1570,6 +1642,91 @@ async function goCard(delta) {
   await openCard(ids[j], {}, ids);
 }
 
+// ================= 相場（カードラッシュ販売価格） =================
+
+const MARKET_FRESH_MS = 24 * 60 * 60 * 1000;
+const verNum = (v) => String(v || '0').split('.').reduce((a, x) => a * 1000 + Number(x || 0), 0);
+
+// 1枚分の相場を取得する（検索語を順に試し、同じカードの商品から状態に合う価格を選ぶ）
+async function fetchMarket(c) {
+  const target = {
+    name: c.name, number: c.number, setCode: c.setCode, rarity: c.rarity, grade: c.grade, sealed: c.sealed, rank: wantedRankOf(c),
+    hint: [c.rawTitle, c.memo, c.condition].join(' '), // 1ED・ミラーなどの手がかり
+  };
+  const base = { rank: target.rank, sig: marketSig(c), at: nowIso() };
+  if (!c.name) return { ...base, error: 'カード名がありません' };
+  let last = { error: '検索結果がありません' };
+  for (const q of CR.queryCandidates(c.name, c.number).slice(0, 3)) {
+    const r = await CR.search(q);
+    if (r.items.length && !('price' in r.items[0])) {
+      throw new Error('カードラッシュ連携の拡張機能が古いため価格を取得できません。chrome://extensions で拡張機能を更新してください');
+    }
+    const est = MK.estimate(target, r.items);
+    if (!est.error) return { ...base, ...est };
+    last = est;
+    if (/特定できません/.test(est.error)) break; // より短い検索語では同名カードがさらに混ざる
+  }
+  return { ...base, error: last.error };
+}
+
+async function updateMarket(cards, { force = false } = {}) {
+  if (state.marketRun) { toast('相場を更新中です'); return; }
+  const v = await CR.ping();
+  if (verNum(v) < verNum('1.1.0')) throw new Error(`カードラッシュ連携の拡張機能（v${v}）が古いため価格を取得できません。chrome://extensions で拡張機能を更新してください`);
+  // 新しく取得済みで条件（状態・鑑定など）も変わっていないカードは飛ばす
+  const todo = cards.filter((c) => force || !c.market?.at || c.market.sig !== marketSig(c) || Date.now() - new Date(c.market.at).getTime() > MARKET_FRESH_MS);
+  if (!todo.length) { toast('すべて24時間以内に取得済みです（「すべて取り直す」で再取得できます）'); return; }
+  const run = { done: 0, total: todo.length, ok: 0, ng: 0, stop: false };
+  state.marketRun = run;
+  renderMarketStatus();
+  try {
+    for (const c0 of todo) {
+      if (run.stop) break;
+      const c = structuredClone(state.cards.find((x) => x.id === c0.id) || c0);
+      c.market = await fetchMarket(c);
+      await saveCard(c); // 1件ずつ保存（途中で止めても取得分は残る）
+      run.done++;
+      if (c.market.error) run.ng++; else run.ok++;
+      renderMarketStatus();
+      await sleep(300);
+    }
+    toast(`相場を更新しました（取得 ${run.ok}件${run.ng ? `・取得できず ${run.ng}件` : ''}${run.stop ? '・中止' : ''}）`, 'ok');
+  } finally {
+    state.marketRun = null;
+    renderMarketStatus();
+    refreshView();
+  }
+}
+
+// 画面下の進捗表示
+function renderMarketStatus() {
+  const el = $('#market-status');
+  const r = state.marketRun;
+  if (!r) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.innerHTML = `<span>相場を取得中… ${r.done} / ${r.total}（取得 ${r.ok}・不可 ${r.ng}）</span>
+    <span class="bar"><i style="width:${(r.done / r.total) * 100}%"></i></span>
+    <button class="btn small ghost" data-action="market-stop">中止</button>`;
+}
+
+function marketSectionHtml(c) {
+  const m = c.market;
+  const stale = m && m.sig && m.sig !== marketSig(c);
+  return `
+      <section class="sub">
+        <div class="panel-head"><h3>相場（カードラッシュ販売価格）</h3>
+          <button type="button" class="btn small" data-action="market-one">${m ? '相場を取り直す' : '相場を取得'}</button></div>
+        ${!m ? '<p class="muted small">未取得です。状態評価・鑑定・未開封に合わせてカードラッシュの販売価格から算出します。</p>'
+          : m.error ? `<p class="notice small">取得できませんでした: ${esc(m.error)}</p>`
+            : `<p><strong class="mk-price">${yen(m.price)}</strong>${qty(c) > 1 ? ` <span class="muted small">× ${qty(c)}枚 = ${yen(m.price * qty(c))}</span>` : ''}
+                ${m.estimated ? ' <span class="badge warn">推定</span>' : ''}${marketCheck(c) ? ' <span class="badge warn">要確認</span>' : ''}</p>
+               ${marketCheck(c) ? `<p class="notice small">${esc(marketCheck(c))}。参照先の商品が手持ちのカードと同じか確認してください。違う場合は「🔎 カードラッシュから取得」で正しい商品を選び、相場を取り直してください。</p>` : ''}
+               <p class="small">${esc(m.basis)}</p>
+               <p class="muted small">参照: <a href="${esc(m.url)}" target="_blank" rel="noopener">${esc(m.listing)}</a></p>`}
+        ${m ? `<p class="muted small">取得 ${esc(new Date(m.at).toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' }))}${stale ? ' ・ <strong>状態・鑑定などが変わったため取り直してください</strong>' : ''}</p>` : ''}
+      </section>`;
+}
+
 // ================= カードラッシュ検索ダイアログ =================
 
 // カードにカードラッシュの商品情報を反映（画像は中継経由で取得して端末に保存）
@@ -1766,6 +1923,7 @@ function renderCardForm() {
       </div>
       ${c.rawTitle ? `<p class="muted small">元の商品名: ${esc(c.rawTitle)}</p>` : ''}
       <label class="fld"><span>メモ</span><textarea name="memo" rows="2">${esc(c.memo)}</textarea></label>
+      ${c.status === 'wish' ? '' : marketSectionHtml(c)}
 
       ${c.status === 'wish' ? '' : condSectionHtml(c)}
     </div>
@@ -1964,6 +2122,19 @@ const actions = {
   },
   'close-card': () => closeCard(),
   'cr-card': () => { syncForm(); openCrForEditing(); },
+  'market-one': async (el) => {
+    syncForm();
+    el.disabled = true;
+    el.textContent = '取得中…';
+    try {
+      state.editing.market = await fetchMarket(state.editing);
+      renderCardForm();
+      toast(state.editing.market.error ? '相場を取得できませんでした' : '相場を取得しました。保存すると反映されます', state.editing.market.error ? 'error' : 'ok');
+    } finally { el.disabled = false; }
+  },
+  'market-all': (el) => updateMarket(live('owned'), { force: !!el.dataset.force }),
+  'market-selected': () => updateMarket(live('owned').filter((c) => state.selected.has(c.id)), { force: true }),
+  'market-stop': () => { if (state.marketRun) state.marketRun.stop = true; },
   'cr-cand': (el) => {
     const cand = state.candidates[Number(el.dataset.idx)];
     openCrPicker({

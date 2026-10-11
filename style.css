@@ -428,3 +428,17 @@ tr .tick { position: static; display: inline-block; border-color: var(--line2); 
 .badge.sealed.second { top: 30px; }
 .badge.sealed-inline { background: #0e7490; color: #fff; }
 .fld-check { align-self: end; min-height: 38px; margin: 6px 0; }
+
+/* ===== 相場 ===== */
+.mk-label { font-size: .62rem; color: var(--muted); font-weight: 600; margin-right: 3px; }
+.mk-est { font-size: .6rem; color: var(--warn); font-weight: 700; margin-left: 3px; }
+.mk-price { font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+.market-status {
+  position: fixed; left: 50%; transform: translateX(-50%); z-index: 40;
+  bottom: calc(68px + env(safe-area-inset-bottom)); width: min(calc(100vw - 16px), 560px);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  background: var(--surface); border: 1px solid var(--accent); border-radius: 12px; padding: 8px 12px; box-shadow: 0 8px 30px rgba(0, 0, 0, .25); font-size: .85rem;
+}
+.market-status[hidden] { display: none; }
+.market-status .bar { flex: 1 1 120px; }
+@media (min-width: 860px) { .market-status { bottom: 20px; } }

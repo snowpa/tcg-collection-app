@@ -86,7 +86,8 @@ export function queryCandidates(text, number) {
   const words = queryFrom(text).split(' ').filter(Boolean);
   const no = String(number || '').replace(/\s/g, '');
   const list = [];
-  if (/\d+\/\d+/.test(no)) {
+  // 「198/190」のほか、プロモの「272/S-P」「047/L-P」も番号として使う
+  if (/\d+\/[\w-]+/.test(no)) {
     if (words[0]) list.push(`${words[0]} ${no}`);
     list.push(no);
   }
