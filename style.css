@@ -435,3 +435,6 @@ tr .tick { position: static; display: inline-block; border-color: var(--line2); 
 .psa-table { min-width: 0; }
 .psa-table td, .psa-table th { padding: 5px 10px; }
 .fld.inline > select { width: auto; }
+.sell-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 2px 0; }
+.sell-line strong { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.sell-sub { display: block; text-align: right; font-weight: 400; }
