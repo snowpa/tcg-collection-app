@@ -420,3 +420,5 @@ tr .tick { position: static; display: inline-block; border-color: var(--line2); 
 .cr-name { font-size: .82rem; font-weight: 600; line-height: 1.35; }
 .cr-meta { font-size: .72rem; color: var(--muted); }
 .cr-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip.sev-unchecked span { border-style: dashed; color: var(--muted); }
+.chip.sev-unchecked input:checked + span { background: var(--surface2); border-color: var(--line2); color: var(--text); }

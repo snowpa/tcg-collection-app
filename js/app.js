@@ -184,7 +184,9 @@ const DEFECTS = [
   ['holo', 'ホロ傷'], ['stain', '汚れ・シミ'], ['print', '印刷ズレ・初期傷'], ['warp', '反り'],
 ];
 // 程度（none は「なし」）
-const SEVERITY = [['none', 'なし'], ['light', '軽微'], ['moderate', '目立つ'], ['heavy', '重度']];
+// unchecked は「未確認」（まだ見ていない）。none の「なし」（確認して問題なし）とは区別する
+const SEVERITY = [['unchecked', '未確認'], ['none', 'なし'], ['light', '軽微'], ['moderate', '目立つ'], ['heavy', '重度']];
+const isDefect = (v) => !!v && v !== 'none' && v !== 'unchecked';
 const SEVERITY_LABEL = Object.fromEntries(SEVERITY);
 // 白かけ位置（角4つ＋辺4つ）
 const WH_POS = ['tl', 't', 'tr', 'r', 'br', 'b', 'bl', 'l'];
@@ -197,7 +199,7 @@ function emptyCond() {
     inspectedAt: '',
     overall: '',
     centering: { front: { l: '', r: '', t: '', b: '' }, back: { l: '', r: '', t: '', b: '' } },
-    defects: Object.fromEntries(DEFECTS.map(([k]) => [k, 'none'])),
+    defects: Object.fromEntries(DEFECTS.map(([k]) => [k, 'unchecked'])),
     whiteMarks: { front: [], back: [] },
     note: '',
     photos: [],
@@ -242,7 +244,8 @@ function centeringText(r) {
   return [p(r.lr, '左', '右'), p(r.tb, '上', '下')].filter(Boolean).join(' ／ ');
 }
 
-const activeDefects = (cond) => DEFECTS.filter(([k]) => cond.defects[k] && cond.defects[k] !== 'none');
+const activeDefects = (cond) => DEFECTS.filter(([k]) => isDefect(cond.defects[k]));
+const uncheckedDefects = (cond) => DEFECTS.filter(([k]) => cond.defects[k] === 'unchecked');
 
 // 一覧用の短い状態要約
 function condSummary(c) {
@@ -304,6 +307,29 @@ async function loadPhotos(ids) {
     if (ph && !ph.deleted) out[id] = ph.data;
   }
   return out;
+}
+
+// 「未確認」追加前のカードは欠陥が初期値の「なし」で保存されている。
+// 点検日・総合評価・白かけ位置・メモが空で全項目「なし」のカードは未確認とみなして一度だけ移行する
+async function migrateUnchecked() {
+  if (await db.get('meta', 'migratedUnchecked')) return 0;
+  const t = nowIso();
+  const changed = [];
+  for (const c of state.cards) {
+    if (c.deleted || !c.cond) continue;
+    const x = c.cond;
+    const untouched = !x.inspectedAt && !x.overall && !x.note
+      && !(x.whiteMarks?.front?.length || x.whiteMarks?.back?.length)
+      && DEFECTS.every(([k]) => (x.defects?.[k] || 'none') === 'none');
+    if (!untouched) continue;
+    x.defects = Object.fromEntries(DEFECTS.map(([k]) => [k, 'unchecked']));
+    c.updatedAt = t;
+    changed.push(c);
+  }
+  if (changed.length) await db.putMany('cards', changed);
+  await db.put('meta', { key: 'migratedUnchecked', at: t });
+  if (changed.length) markDirty();
+  return changed.length;
 }
 
 // 旧形式の移行: カード内に埋め込んだ状態写真を photos ストアへ移し、サムネイルを作る
@@ -514,7 +540,7 @@ const CSV_COLUMNS = [
   ['状態評価', (c) => condOf(c).overall], ['点検日', (c) => condOf(c).inspectedAt],
   ['センタリング(表)', (c) => { const r = centeringOf(condOf(c).centering.front, 'front'); return r ? centeringText(r) : ''; }],
   ['センタリング(裏)', (c) => { const r = centeringOf(condOf(c).centering.back, 'back'); return r ? centeringText(r) : ''; }],
-  ...DEFECTS.map(([k, l]) => [l, (c) => { const v = condOf(c).defects[k]; return v && v !== 'none' ? SEVERITY_LABEL[v] : ''; }]),
+  ...DEFECTS.map(([k, l]) => [l, (c) => { const v = condOf(c).defects[k]; return v && v !== 'none' ? SEVERITY_LABEL[v] : ''; }]), // 「なし」は空欄
   ['白かけ位置(表)', (c) => condOf(c).whiteMarks.front.map((p) => WH_LABEL[p]).join(' ')],
   ['白かけ位置(裏)', (c) => condOf(c).whiteMarks.back.map((p) => WH_LABEL[p]).join(' ')],
   ['状態詳細メモ', (c) => condOf(c).note],
@@ -588,7 +614,8 @@ async function importCsv(file) {
     card.cond.overall = COND_RATINGS.some(([k]) => k === get(r, '状態評価')) ? get(r, '状態評価') : '';
     card.cond.inspectedAt = normDate(get(r, '点検日'));
     card.cond.note = get(r, '状態詳細メモ');
-    DEFECTS.forEach(([k, l]) => { card.cond.defects[k] = sevByLabel[get(r, l)] || 'none'; });
+    // 列があって空欄なら「なし」、列自体がない（旧スプレッドシート）なら「未確認」
+    DEFECTS.forEach(([k, l]) => { card.cond.defects[k] = col(l) < 0 ? 'unchecked' : sevByLabel[get(r, l)] || 'none'; });
     card.cond.whiteMarks.front = get(r, '白かけ位置(表)').split(/\s+/).map((l) => posByLabel[l]).filter(Boolean);
     card.cond.whiteMarks.back = get(r, '白かけ位置(裏)').split(/\s+/).map((l) => posByLabel[l]).filter(Boolean);
     if (link) existingLinks.add(link);
@@ -912,7 +939,7 @@ function viewDashboard() {
 
 const COND_FILTERS = [
   ...COND_RATINGS.map(([k, l]) => [k, `評価 ${l}`]),
-  ['unrated', '未評価'], ['issues', '欠陥あり'], ['crease', '折れ・へこみあり'], ['center-ng', 'センタリング基準外'],
+  ['unrated', '未評価'], ['issues', '欠陥あり'], ['crease', '折れ・へこみあり'], ['unchecked-items', '欠陥に未確認の項目あり'], ['center-ng', 'センタリング基準外'],
 ];
 const SORTS = [
   ['added-desc', '登録が新しい順'], ['added-asc', '登録が古い順'], ['purchase-desc', '購入日が新しい順'], ['purchase-asc', '購入日が古い順'],
@@ -941,7 +968,8 @@ function filteredCards() {
       const cond = condOf(c);
       if (f.cond === 'unrated') return !cond.overall;
       if (f.cond === 'issues') return activeDefects(cond).length > 0;
-      if (f.cond === 'crease') return ['crease', 'dent'].some((k) => cond.defects[k] !== 'none');
+      if (f.cond === 'crease') return ['crease', 'dent'].some((k) => isDefect(cond.defects[k]));
+      if (f.cond === 'unchecked-items') return uncheckedDefects(cond).length > 0;
       if (f.cond === 'center-ng') return ['front', 'back'].some((k) => centeringOf(cond.centering[k], k)?.ok === false);
       return cond.overall === f.cond;
     });
@@ -1165,6 +1193,7 @@ function openBulk() {
         <label class="fld"><span>区分</span><select name="status">${opt('', '変更しない', '')}${opt('owned', '所持', '')}${opt('wish', 'ほしいもの', '')}</select></label>
         <label class="fld"><span>状態の総合評価</span><select name="overall">${opt('', '変更しない', '')}${opt('-', '未評価に戻す', '')}${COND_RATINGS.map(([k, l]) => opt(k, l, '')).join('')}</select></label>
         ${fld('点検日', 'inspectedAt', '', 'date')}
+        <label class="fld"><span>欠陥の項目</span><select name="defects">${opt('', '変更しない', '')}${opt('unchecked-to-none', '未確認の項目を「なし」にする', '')}${opt('all-unchecked', 'すべて「未確認」に戻す', '')}</select></label>
         ${fld('セットコード', 'setCode', '', 'text')}
         ${fld('セット名', 'setName', '', 'text')}
         ${fld('鑑定', 'grade', '', 'text', 'list="dl-grade"')}
@@ -1196,6 +1225,8 @@ async function applyBulk() {
     for (const k of ['setCode', 'setName', 'grade', 'shop', 'purchaseDate']) if (v(k)) c[k] = v(k);
     if (v('overall')) c.cond.overall = v('overall') === '-' ? '' : v('overall');
     if (v('inspectedAt')) c.cond.inspectedAt = v('inspectedAt');
+    if (v('defects') === 'unchecked-to-none') DEFECTS.forEach(([k]) => { if (c.cond.defects[k] === 'unchecked') c.cond.defects[k] = 'none'; });
+    if (v('defects') === 'all-unchecked') { DEFECTS.forEach(([k]) => { c.cond.defects[k] = 'unchecked'; }); c.cond.whiteMarks = { front: [], back: [] }; }
     if (add.length || rm.size) c.tags = [...new Set([...(c.tags || []), ...add])].filter((t) => !rm.has(t));
     changed.push(c);
   }
@@ -1767,13 +1798,14 @@ function condSectionHtml(c) {
         <p class="muted small">表・裏それぞれ、上下左右の枠（ボーダー）の幅を入力すると比率を計算します。単位は mm でも定規の目盛りでも構いません。PSA10 の目安は 表 55:45・裏 75:25 以内です。</p>
         <div class="cent-grid">${centInputs('front', '表')}${centInputs('back', '裏')}</div>
 
-        <h4>欠陥</h4>
+        <div class="panel-head" style="margin:14px 0 6px"><h4 style="margin:0">欠陥</h4>
+          ${uncheckedDefects(cond).length ? `<button type="button" class="btn small ghost" data-action="defects-none">未確認の${uncheckedDefects(cond).length}項目を「なし」にする</button>` : ''}</div>
         <div class="defects">${DEFECTS.map(([k, l]) => `<div class="defect-row"><span class="defect-name">${l}</span>
           <div class="chips sev">${SEVERITY.map(([v, vl]) => chip(`cond.defects.${k}`, v, vl, cond.defects[k], `sev-${v}`)).join('')}</div></div>`).join('')}</div>
 
         <h4>白かけの位置</h4>
         <p class="muted small">角・辺をタップして白かけのある位置を記録します。</p>
-        <div class="wh-grid">${['front', 'back'].map((side) => whDiagram(side, cond.whiteMarks[side])).join('')}</div>
+        <div class="wh-grid">${['front', 'back'].map((side) => whDiagram(side, cond.whiteMarks[side], cond.defects.whitening)).join('')}</div>
 
         <label class="fld"><span>状態の詳細メモ</span><textarea name="cond.note" rows="2" placeholder="例: 裏面右上に0.5mmほどの白かけ。ホロに薄い縦線。">${esc(cond.note)}</textarea></label>
 
@@ -1794,7 +1826,7 @@ function centResultHtml(side, v) {
 }
 
 // 白かけ位置の図（角・辺をタップで切り替え）
-function whDiagram(side, marks) {
+function whDiagram(side, marks, whitening) {
   const on = (p) => (marks.includes(p) ? ' on' : '');
   const g = (p, shape) => `<g class="wh-pos${on(p)}" data-action="toggle-wh" data-side="${side}" data-pos="${p}" role="button" tabindex="0" aria-pressed="${marks.includes(p)}" aria-label="${side === 'front' ? '表' : '裏'} ${WH_LABEL[p]}"><title>${WH_LABEL[p]}</title>${shape}</g>`;
   const corner = (p, x, y) => g(p, `<circle cx="${x}" cy="${y}" r="10"/>`);
@@ -1806,7 +1838,7 @@ function whDiagram(side, marks) {
       ${g('t', '<rect x="30" y="4" width="40" height="12" rx="4"/>')}${g('b', '<rect x="30" y="120" width="40" height="12" rx="4"/>')}
       ${g('l', '<rect x="4" y="48" width="12" height="40" rx="4"/>')}${g('r', '<rect x="84" y="48" width="12" height="40" rx="4"/>')}
     </svg>
-    <figcaption class="small">${marks.length ? esc(marks.map((p) => WH_LABEL[p]).join('・')) : '<span class="muted">なし</span>'}</figcaption>
+    <figcaption class="small">${marks.length ? esc(marks.map((p) => WH_LABEL[p]).join('・')) : `<span class="muted">${whitening === 'unchecked' ? '未確認' : 'なし'}</span>`}</figcaption>
   </figure>`;
 }
 
@@ -1977,13 +2009,18 @@ const actions = {
   'clear-image': () => { syncForm(); state.editing.imageData = ''; state.editing.imageUrl = ''; state.editing.thumb = ''; renderCardForm(); },
   'ai-identify': (el) => aiIdentifyEditing(el),
   'cond-today': () => { syncForm(); state.editing.cond.inspectedAt = today(); renderCardForm(); },
+  'defects-none': () => {
+    syncForm();
+    DEFECTS.forEach(([k]) => { if (state.editing.cond.defects[k] === 'unchecked') state.editing.cond.defects[k] = 'none'; });
+    renderCardForm();
+  },
   'toggle-wh': (el) => {
     syncForm();
     const marks = state.editing.cond.whiteMarks[el.dataset.side];
     const i = marks.indexOf(el.dataset.pos);
     if (i >= 0) marks.splice(i, 1); else marks.push(el.dataset.pos);
     // 白かけ位置を付けたのに程度が「なし」なら「軽微」にする
-    if (marks.length && state.editing.cond.defects.whitening === 'none') state.editing.cond.defects.whitening = 'light';
+    if (marks.length && !isDefect(state.editing.cond.defects.whitening)) state.editing.cond.defects.whitening = 'light';
     renderCardForm();
   },
   'del-photo': (el) => {
@@ -2253,6 +2290,7 @@ async function init() {
   render();
   // 旧形式データの移行（写真の分離・サムネイル作成）は表示後に行う
   if (await migrateCards()) refreshView();
+  if (await migrateUnchecked()) refreshView();
   // 一覧のツールバーをヘッダー（PC ではメニューも）の下に固定する位置
   const stickyTop = () => {
     const nav = $('#nav');
