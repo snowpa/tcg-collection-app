@@ -179,10 +179,10 @@ function marketResult(c) {
   if (!m || m.error) return null;
   // 旧形式（価格だけ保存していた頃のデータ）はそのまま使う
   if (!m.quotes) return m.price > 0 ? { price: m.price, basis: m.basis, estimated: m.estimated, url: m.url, listing: m.listing, legacy: true } : null;
-  const key = [MK.normGrade(c.grade), wantedRankOf(c), state.settings.psaPos].join('|');
+  const key = [MK.normGrade(c.grade), ratingOf(c), state.settings.psaPos].join('|');
   const hit = marketCache.get(c);
   if (hit && hit.key === key && hit.m === m) return hit.r;
-  const r = MK.priceFromQuotes(m.quotes, { grade: c.grade, rank: wantedRankOf(c), psaPos: state.settings.psaPos });
+  const r = MK.priceFromQuotes(m.quotes, { grade: c.grade, rating: ratingOf(c), psaPos: state.settings.psaPos });
   marketCache.set(c, { key, m, r });
   return r;
 }
@@ -284,21 +284,16 @@ function condSummary(c) {
   return ds.length ? ds.join('・') : cond.inspectedAt ? '目立つ欠陥なし' : '';
 }
 
-// 手持ちの状態 → 相場に使うカードラッシュの状態ランク（normal=無印 / A- / B / C）
-function wantedRankOf(c) {
+// 相場の計算に使う総合評価（S〜D）。未評価なら欠陥の程度から推定する
+function ratingOf(c) {
   const cond = condOf(c);
-  const o = cond.overall;
-  if (o === 'S' || o === 'A') return 'normal';
-  if (o === 'B') return 'A-';
-  if (o === 'C') return 'B';
-  if (o === 'D') return 'C';
-  // 未評価なら欠陥の程度から判断する
+  if (MK.RATING_PSA[cond.overall]) return cond.overall;
   const sev = activeDefects(cond).map(([k]) => cond.defects[k]);
   const bent = ['crease', 'dent'].some((k) => ['moderate', 'heavy'].includes(cond.defects[k]));
   if (sev.includes('heavy') || bent) return 'C';
   if (sev.includes('moderate')) return 'B';
-  if (sev.includes('light')) return 'A-';
-  return 'normal';
+  if (sev.includes('light')) return 'A';
+  return 'S';
 }
 
 // 相場の算出条件。これが変わったら相場を取り直す
@@ -1006,7 +1001,7 @@ function viewDashboard() {
           <button class="btn small" data-action="market-all">相場を更新</button>
           <button class="btn small ghost" data-action="market-all" data-force="1" title="24時間以内に取得済みのカードも取り直す">すべて取り直す</button>
         </div></div>
-      <p class="muted small">カードラッシュから同じカードの状態別・鑑定別の販売価格をまとめて取得しておき、手持ちの状態に合わせてアプリ内で相場を計算します（状態や鑑定を変えても取り直しは不要）。総合評価 S・A→無印、B→状態A-、C→状態B、D→状態C（未評価は欠陥チェックから判断）。該当する状態の商品がないときは別の状態の価格から換算した「推定」です。
+      <p class="muted small">カードラッシュから同じカードの状態別・鑑定別の販売価格をまとめて取得しておき、手持ちの状態に合わせてアプリ内で相場を計算します（状態や鑑定を変えても取り直しは不要）。鑑定品ではないカードは通常（無印）の価格に、評価 S＝100%・A＝PSA8相当・B＝PSA5相当・C＝PSA3相当・D＝PSA1相当の割合をかけます（未評価は欠陥チェックから推定）。PSA 鑑定品は PSA10 の価格 × グレード別の割合です。割合で計算した相場には「推定」が付きます。
         ${lastAt ? `最終更新 ${esc(new Date(lastAt).toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' }))}。` : ''}
         ${failed ? `<button class="link" data-action="filter-cond" data-cond="market-error">取得できなかったカード ${failed}件</button>（カードラッシュで照合して番号・型番を入れると取得できます）` : ''}</p>
       ${topMarket.length ? `<ol class="rank">${topMarket.map((c) => `<li><button class="rank-row" data-action="open-card" data-id="${c.id}">
@@ -1558,7 +1553,13 @@ function viewSettings() {
 
     <section class="panel">
       <h2>相場の計算</h2>
-      <p class="muted small">PSA 鑑定品の相場は、カードラッシュの PSA10 の販売価格に次の割合をかけて求めます（PSA10 の販売がない場合は同じグレードの販売価格、なければ未鑑定の価格）。</p>
+      <p class="muted small">鑑定品ではないカードは、カードラッシュの通常（無印）の販売価格に、総合評価に応じた PSA 相当の割合をかけます（未評価は欠陥チェックから推定: 欠陥なし→S、軽微→A、目立つ→B、重度・折れ/へこみ→C）。</p>
+      <div class="table-wrap"><table class="table psa-table"><thead><tr><th>総合評価</th><th class="r">通常価格に対する割合</th></tr></thead>
+        <tbody>${Object.entries(MK.RATING_PSA).map(([r, n]) => {
+          const f = (x) => `${Math.round(x * 1000) / 10}%`;
+          return `<tr><td>${r}${n === 10 ? '（通常）' : `（PSA${n}相当）`}</td><td class="r">${n === 10 ? '100%' : `${f(MK.PSA_RATIO[n][0])} 〜 ${f(MK.PSA_RATIO[n][1])}（使用: ${f(MK.psaRatio(n, s.psaPos))}）`}</td></tr>`;
+        }).join('')}</tbody></table></div>
+      <p class="muted small">PSA 鑑定品の相場は、カードラッシュの PSA10 の販売価格に次の割合をかけて求めます（PSA10 の販売がない場合は同じグレードの販売価格、なければ鑑定品ではないカードと同じ計算）。</p>
       <div class="table-wrap"><table class="table psa-table"><thead><tr><th>グレード</th><th class="r">PSA10 を 100% としたときの目安</th></tr></thead>
         <tbody>${Object.keys(MK.PSA_RATIO).sort((a, b) => b - a).map((n) => {
           const [lo, hi] = MK.PSA_RATIO[n];

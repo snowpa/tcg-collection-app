@@ -17,6 +17,9 @@ export const PSA_RATIO = {
 };
 export const PSA_POS_LABEL = { low: '下限', mid: '中央', high: '上限' };
 
+// 鑑定品ではないカードの総合評価 → PSA 何相当の割合で計算するか（通常価格を PSA10 = 100% とみなす）
+export const RATING_PSA = { S: 10, A: 8, B: 5, C: 3, D: 1 };
+
 // 目安の幅のどこを使うか（low=下限 / mid=中央 / high=上限）
 export function psaRatio(n, pos = 'mid') {
   const [lo, hi] = PSA_RATIO[n];
@@ -138,7 +141,7 @@ export function matchQuotes(target, items) {
 /**
  * 【表示のたびに】保存した商品一覧と、現在の状態・鑑定・設定から相場を計算する（通信なし）
  * @param {ReturnType<typeof matchQuotes>['quotes']} quotes
- * @param {{grade?:string, rank:'normal'|'A-'|'B'|'C', psaPos?:'low'|'mid'|'high'}} target
+ * @param {{grade?:string, rating:'S'|'A'|'B'|'C'|'D', psaPos?:'low'|'mid'|'high'}} target rating は総合評価（未評価なら推定した評価）
  * @returns {{price:number, basis:string, estimated:boolean, itemId:string, url:string, listing:string} | {error:string}}
  */
 export function priceFromQuotes(quotes, target) {
@@ -170,19 +173,31 @@ export function priceFromQuotes(quotes, target) {
     note = `（${grade}の販売なし・未鑑定の価格で算出）`;
   }
 
-  const want = target.rank || 'normal';
+  // 鑑定品ではない: 通常（無印）の販売価格 × 総合評価に応じた PSA 相当の割合
   const ofRank = (rk) => quotes.filter((q) => (rk === 'normal' ? q.k === 'normal' : q.k === 'cond' && q.r === rk));
-  const exact = best(ofRank(want));
-  if (exact) return out(exact, exact.p, `${RANK_LABEL[want]}の販売価格${note}`, !!note);
-
-  // 同じ状態ランクの商品がない → 別ランクの価格を掛け率で換算（無印を優先）
-  for (const rk of ['normal', 'A-', 'B', 'C']) {
-    const q = best(ofRank(rk));
-    if (!q) continue;
-    const price = round10((q.p / RANK_FACTOR[rk]) * RANK_FACTOR[want]);
-    return out(q, price, `${RANK_LABEL[want]}の販売なし。${RANK_LABEL[rk]} ${yenStr(q.p)}から換算${note}`, true);
+  let baseQ = best(ofRank('normal'));
+  let basePrice = baseQ?.p;
+  let baseNote = '';
+  if (!baseQ) {
+    // 無印の販売がなければ、状態ランク付きの商品の価格から通常価格を換算する
+    for (const rk of ['A-', 'B', 'C']) {
+      const q = best(ofRank(rk));
+      if (!q) continue;
+      baseQ = q;
+      basePrice = round10(q.p / RANK_FACTOR[rk]);
+      baseNote = `（無印の販売なし。${RANK_LABEL[rk]} ${yenStr(q.p)}から通常価格を換算）`;
+      break;
+    }
   }
-  return { error: '状態に合う商品が見つかりません（鑑定品のみ・状態難のみなど）' };
+  if (!baseQ) return { error: '通常の販売価格が見つかりません（鑑定品・状態難のみなど）' };
+  const rating = RATING_PSA[target.rating] ? target.rating : 'S';
+  const n = RATING_PSA[rating];
+  if (n === 10) return out(baseQ, basePrice, `評価${rating}：通常（無印）の販売価格${baseNote}${note}`, !!(baseNote || note));
+  const pos = target.psaPos || 'mid';
+  const [lo, hi] = PSA_RATIO[n];
+  const ratio = psaRatio(n, pos);
+  return out(baseQ, round10(basePrice * ratio),
+    `評価${rating}：通常 ${yenStr(basePrice)} × ${pct(ratio)}（PSA${n}相当の目安 ${pct(lo)}〜${pct(hi)}の${PSA_POS_LABEL[pos]}）${baseNote}${note}`, true);
 }
 
 // 照合と計算をまとめて行う（テスト用）
