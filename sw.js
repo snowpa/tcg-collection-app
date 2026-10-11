@@ -1,5 +1,5 @@
 // オフライン用 Service Worker（ネットワーク優先・失敗時にキャッシュ）
-const CACHE = 'tcg-collection-v7';
+const CACHE = 'tcg-collection-v8';
 const ASSETS = [
   './', './index.html', './style.css', './manifest.json', './icon.svg',
   './js/app.js', './js/db.js', './js/google.js', './js/parser.js', './js/gemini.js', './js/chart.js', './js/cardrush.js',
@@ -22,7 +22,8 @@ self.addEventListener('fetch', (e) => {
   // 同一オリジンの GET のみ扱う（Google API や画像の直リンクは素通し）
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   e.respondWith(
-    fetch(req)
+    // ブラウザの HTTP キャッシュ（GitHub Pages は最大10分）に古い版が残らないよう、毎回サーバーに更新を確認する
+    fetch(req, { cache: 'no-cache' })
       .then((res) => {
         if (res.ok) {
           const copy = res.clone();
