@@ -199,8 +199,14 @@ img.broken { display: none; }
 .badge.warn { background: var(--warn-soft); color: var(--warn); }
 .tile-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .tile-name { font-weight: 600; font-size: .88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tile-meta { font-size: .72rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tile-price { display: flex; justify-content: space-between; gap: 4px; font-size: .82rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile-meta { display: flex; gap: 6px; align-items: baseline; font-size: .72rem; color: var(--muted); min-width: 0; }
+.tm-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-meta .warn-text { flex: none; }
+/* 金額は左、上昇率は右端に固定して桁数が違ってもそろえる */
+.tile-price { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; gap: 4px; font-size: .82rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tp-label { font-size: .62rem; color: var(--muted); font-weight: 600; }
+.tp-amt { white-space: nowrap; }
+.tile-price .gain { margin-left: 0; text-align: right; white-space: nowrap; }
 
 .thumb { width: 40px; height: 56px; border-radius: 4px; background: var(--surface2); overflow: hidden; flex: none; display: block; position: relative; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -362,7 +368,7 @@ img.broken { display: none; }
 /* グリッドのサイズ */
 .grid.d-s { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
 .grid.d-s .tile-body { padding: 5px 6px 6px; }
-.grid.d-s .tile-meta, .grid.d-s .tile-price .warn-text { display: none; }
+.grid.d-s .tile-meta, .grid.d-s .tile-price .tp-label { display: none; }
 .grid.d-s .tile-name { font-size: .75rem; }
 .grid.d-s .tile-price { font-size: .72rem; }
 .grid.d-l { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
@@ -440,3 +446,8 @@ tr .tick { position: static; display: inline-block; border-color: var(--line2); 
 .sell-sub { display: block; text-align: right; font-weight: 400; }
 .gain { font-size: .7rem; font-weight: 700; margin-left: 4px; }
 td .gain { margin-left: 0; }
+
+/* リストの相場列: 金額と上昇率を別の行で右揃え */
+.table td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cell-amt { display: block; }
+td .gain { display: block; margin-left: 0; }

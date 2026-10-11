@@ -909,11 +909,11 @@ function tileHtml(c) {
     </div>
     <div class="tile-body">
       <div class="tile-name">${esc(title(c))}</div>
-      <div class="tile-meta">${esc([c.rarity, c.setCode, c.number].filter(Boolean).join(' · ') || '\u00a0')}</div>
-      <div class="tile-price">${c.status !== 'wish' && marketUnit(c) !== null
-        ? `<span title="相場（カードラッシュ販売価格） ／ 売却概算 ${yen(sellUnit(c))}"><small class="mk-label">相場</small>${yen(marketUnit(c))}${gainHtml(c)}</span>`
-        : `<span>${yen(c.status === 'wish' ? c.targetPrice || null : c.purchasePrice || null)}</span>`}
+      <div class="tile-meta"><span class="tm-text">${esc([c.rarity, c.setCode, c.number].filter(Boolean).join(' · ') || ' ')}</span>
         ${issues ? `<span class="warn-text" title="${esc(condSummary(c))}">要注意 ${issues}</span>` : ''}</div>
+      ${c.status !== 'wish' && marketUnit(c) !== null
+        ? `<div class="tile-price" title="相場（カードラッシュ販売価格） ／ 売却概算 ${yen(sellUnit(c))}"><span class="tp-label">相場</span><span class="tp-amt">${yen(marketUnit(c))}</span>${gainHtml(c) || '<span></span>'}</div>`
+        : `<div class="tile-price"><span class="tp-label">${c.status === 'wish' ? '目標' : '購入'}</span><span class="tp-amt">${yen(c.status === 'wish' ? c.targetPrice || null : c.purchasePrice || null)}</span><span></span></div>`}
     </div>
   </button>`;
 }
@@ -1210,7 +1210,7 @@ function rowHtml(c) {
     <td>${cond.overall ? `<span class="badge rating r-${esc(cond.overall)}">${esc(cond.overall)}</span>` : '<span class="muted small">未評価</span>'}</td>
     <td class="small">${esc(activeDefects(cond).map(([k, l]) => `${l}(${SEVERITY_LABEL[cond.defects[k]]})`).join('、'))}</td>
     <td class="r">${qty(c)}</td><td class="r">${yen(c.purchasePrice || null)}</td>
-    <td class="r">${marketUnit(c) !== null ? `${yen(marketUnit(c))}${gainPct(c) !== null ? `<br>${gainHtml(c)}` : ''}` : marketError(c) ? '<small class="muted">取得不可</small>' : ''}</td>
+    <td class="r num">${marketUnit(c) !== null ? `<span class="cell-amt">${yen(marketUnit(c))}</span>${gainHtml(c)}` : marketError(c) ? '<small class="muted">取得不可</small>' : ''}</td>
     <td class="r">${sellUnit(c) !== null ? yen(sellUnit(c)) : ''}</td>
     <td class="small">${esc(c.purchaseDate || '')}</td></tr>`;
 }
