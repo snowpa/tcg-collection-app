@@ -4,6 +4,7 @@ import * as G from './google.js';
 import * as P from './parser.js';
 import * as AI from './gemini.js';
 import { lineChart } from './chart.js';
+import * as CR from './cardrush.js';
 
 // ================= 共通ユーティリティ =================
 
@@ -84,6 +85,7 @@ const DEFAULT_SETTINGS = {
   clientId: '',
   geminiKey: '',
   geminiModel: 'gemini-2.5-flash',
+  cardrushProxy: '',
   gameName: 'ポケモンカード',
   autoAi: false,
   keywordFilter: true,
@@ -152,6 +154,8 @@ const state = {
   editPhotos: {}, // 編集中カードの状態写真 { id: dataURL }
   removedPhotos: new Set(),
   navIds: [],
+  cr: null, // カードラッシュ検索ダイアログの状態
+  crWalk: false, // 選択したカードを順にカードラッシュで照合中
   editingSet: null,
   dirty: false,
   localHandle: null,
@@ -725,6 +729,12 @@ async function addCandidates() {
     gmailId: c.gmailId,
     imageUrl: c.imageUrl,
   }));
+  // カードラッシュで照合済みの候補は正式名と画像を反映
+  const withCr = picked.map((c, i) => [c, cards[i]]).filter(([c]) => c.cr);
+  for (const [i, [cand, card]] of withCr.entries()) {
+    toast(`カードラッシュの画像を取得中… ${i + 1} / ${withCr.length}`);
+    await applyCardrush(card, cand.cr);
+  }
   await saveCards(cards);
   picked.forEach((c) => { state.processed.add(c.gmailId); c.status = 'imported'; c.checked = false; });
   await saveProcessed();
@@ -1129,6 +1139,7 @@ function renderBulkBar() {
     <button class="btn small ghost" data-action="select-all">表示中の${state.resultIds.length}件をすべて選択</button>
     ${n ? '<button class="btn small ghost" data-action="select-none">選択解除</button>' : ''}
     <span class="spacer"></span>
+    <button class="btn small" data-action="cr-walk" ${n ? '' : 'disabled'} title="選択したカードを1枚ずつカードラッシュで照合">🔎 カードラッシュで照合</button>
     <button class="btn small" data-action="bulk-edit" ${n ? '' : 'disabled'}>一括編集</button>
     <button class="btn small danger" data-action="bulk-delete" ${n ? '' : 'disabled'}>削除</button>
   </div>`;
@@ -1341,16 +1352,18 @@ function renderScanResults() {
     ${shown.length ? `<div class="cand-list">${shown.map((c) => {
       const i = all.indexOf(c);
       const [label, tone] = CAND_STATUS[c.status];
-      const ai = c.ai ? `<div class="ai-line">✨ ${esc([c.ai.name, c.ai.rarity, [c.ai.setCode, c.ai.setName].filter(Boolean).join(' '), c.ai.number].filter(Boolean).join(' / '))}</div>` : '';
+      const ai = c.cr ? `<div class="ai-line">🔎 ${esc(c.cr.name)}${c.cr.model ? ` [${esc(c.cr.model)}]` : ''}</div>`
+        : c.ai ? `<div class="ai-line">✨ ${esc([c.ai.name, c.ai.rarity, [c.ai.setCode, c.ai.setName].filter(Boolean).join(' '), c.ai.number].filter(Boolean).join(' / '))}</div>` : '';
       return `<div class="cand${c.checked ? ' on' : ''}">
         <input type="checkbox" data-change="toggle-cand" data-idx="${i}" ${c.checked ? 'checked' : ''} ${c.status === 'imported' ? 'disabled' : ''} aria-label="選択">
-        <span class="thumb">${c.imageUrl ? `<img src="${esc(c.imageUrl)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}</span>
+        <span class="thumb">${c.cr?.thumb || c.imageUrl ? `<img src="${esc(c.cr?.thumb || c.imageUrl)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}</span>
         <div class="cand-info">
           <div class="cand-title">${esc(c.rawTitle)}</div>
           <div class="muted small">${esc(c.date)} ・ ${esc(c.shop)} ・ ${yen(c.price)} ・ <a href="${esc(c.mailLink)}" target="_blank" rel="noopener">メールを開く</a></div>
           ${ai}
         </div>
         <span class="badge ${tone}">${label}</span>
+        <button class="btn small ghost" data-action="cr-cand" data-idx="${i}" title="カードラッシュで正式名と画像を選ぶ">🔎 照合</button>
         <button class="btn small ghost" data-action="ai-one" data-idx="${i}" ${c.aiBusy ? 'disabled' : ''}>${c.aiBusy ? '判定中…' : 'AI'}</button>
       </div>`;
     }).join('')}</div>` : '<p class="muted small">新しい候補はありません。</p>'}`;
@@ -1394,6 +1407,14 @@ function viewSettings() {
       <label class="fld"><span>OAuth クライアントID</span>
         <input data-setting="clientId" value="${esc(s.clientId)}" placeholder="xxxxxxxx.apps.googleusercontent.com" autocomplete="off"></label>
       <p class="muted small">Google Cloud Console で「ウェブ アプリケーション」の OAuth クライアントを作成し、承認済みの JavaScript 生成元に <code>${esc(location.origin)}</code> を追加してください。Gmail API と Google Drive API の有効化も必要です（詳細は README）。</p>
+    </section>
+
+    <section class="panel">
+      <h2>カードラッシュ連携</h2>
+      <p class="muted small">カードの正式名・レアリティ・番号・型番と画像を<a href="https://www.cardrush-pokemon.jp/" target="_blank" rel="noopener">カードラッシュ</a>から取得します。カードラッシュはブラウザから直接読み込めないため、Google Apps Script の中継ウェブアプリを使います（作り方は README の「カードラッシュ連携」）。</p>
+      <label class="fld"><span>カードラッシュ連携URL（GAS ウェブアプリの URL）</span>
+        <input data-setting="cardrushProxy" value="${esc(s.cardrushProxy)}" placeholder="https://script.google.com/macros/s/xxxxxxxx/exec" autocomplete="off"></label>
+      <button class="btn small" data-action="cr-test" ${s.cardrushProxy ? '' : 'disabled'}>接続テスト</button>
     </section>
 
     <section class="panel">
@@ -1450,6 +1471,8 @@ async function openCard(id, preset = {}, navIds = null) {
   cardForm().innerHTML = '';
   renderCardForm();
   if (!cardDlg().open) cardDlg().showModal();
+  // 順に照合中なら、開いたカードの検索をすぐ表示
+  if (state.crWalk) openCrForEditing();
 }
 
 function editingChanged() {
@@ -1499,6 +1522,139 @@ async function goCard(delta) {
   await openCard(ids[j], {}, ids);
 }
 
+// ================= カードラッシュ検索ダイアログ =================
+
+// カードにカードラッシュの商品情報を反映（画像は中継経由で取得して端末に保存）
+async function applyCardrush(c, item) {
+  const p = CR.parseItem(item);
+  c.name = p.name || c.name;
+  if (p.rarity) c.rarity = p.rarity;
+  if (p.number) c.number = p.number;
+  if (p.setCode && p.setCode.toLowerCase() !== String(c.setCode || '').toLowerCase()) {
+    c.setCode = p.setCode;
+    // セット名は登録済みのセットから補う（なければ空にしてセット型番でまとめる）
+    c.setName = state.sets.find((m) => !m.deleted && String(m.code).toLowerCase() === p.setCode.toLowerCase())?.name || '';
+  }
+  c.cardrushId = item.id;
+  c.cardrushUrl = item.url;
+  c.imageUrl = item.image;
+  try {
+    c.imageData = await resizeImage(await CR.imageDataUrl(state.settings.cardrushProxy, item.image), 800);
+    c.thumb = await makeThumb(c.imageData);
+  } catch (e) {
+    // 画像だけ取れない場合は直リンク表示にする
+    console.warn('カードラッシュ画像の取得失敗', e);
+    c.imageData = '';
+    c.thumb = item.thumb || '';
+  }
+}
+
+// queries: 自動で順に試す検索語（見つかった時点で止める）
+function openCrPicker({ queries = [], number = '', heading = 'カードラッシュから選ぶ', onPick }) {
+  if (!state.settings.cardrushProxy) {
+    toast('設定画面で「カードラッシュ連携URL」を入力してください', 'error');
+    return;
+  }
+  state.cr = { q: queries[0] || '', number, heading, onPick, items: [], total: 0, page: 0, loading: false, error: '', note: '' };
+  renderCrPicker();
+  if (!$('#cr-dialog').open) $('#cr-dialog').showModal();
+  if (queries.length) guard(crSearch)(1, queries);
+  else $('#cr-q')?.focus();
+}
+
+async function crSearch(page, fallbacks = null) {
+  const cr = state.cr;
+  cr.loading = true;
+  cr.error = '';
+  cr.note = '';
+  if (page === 1) cr.items = [];
+  renderCrPicker();
+  try {
+    const tries = fallbacks || [cr.q];
+    let r = { items: [], total: 0 };
+    for (const q of tries) {
+      cr.q = q;
+      r = await CR.search(state.settings.cardrushProxy, q, page);
+      if (state.cr !== cr) return; // 途中で閉じた・検索し直した
+      if (r.items.length) break;
+    }
+    if (fallbacks && cr.q !== tries[0] && r.items.length) cr.note = `「${tries[0]}」では見つからなかったため「${cr.q}」で検索しました。`;
+    cr.items = page === 1 ? r.items : [...cr.items, ...r.items];
+    cr.total = r.total || cr.items.length;
+    cr.page = page;
+  } catch (e) {
+    cr.error = e.message;
+  } finally {
+    cr.loading = false;
+    if (state.cr === cr) renderCrPicker();
+  }
+}
+
+function renderCrPicker() {
+  const cr = state.cr;
+  if (!cr) return;
+  // 番号が一致する商品を先頭に、状態ランク付き（中古）を後ろに
+  const want = String(cr.number || '').replace(/\s/g, '');
+  const scored = cr.items.map((item, i) => {
+    const p = CR.parseItem(item);
+    return { item, i, p, hit: !!want && p.number === want, used: !!p.condRank, sold: !!item.soldOut };
+  }).sort((a, b) => (b.hit - a.hit) || (a.used - b.used) || (a.sold - b.sold) || (a.i - b.i));
+  const walk = state.crWalk && cardDlg().open;
+  $('#cr-body').innerHTML = `
+    <header class="dlg-head"><h2>${esc(cr.heading)}</h2>
+      <button type="button" class="icon-btn" data-action="cr-close" aria-label="閉じる">×</button></header>
+    <div class="dlg-body">
+      <form class="row" id="cr-form" style="margin-top:0">
+        <input id="cr-q" class="grow" type="search" value="${esc(cr.q)}" placeholder="カード名（例: マリィ SR）" aria-label="カードラッシュで検索">
+        <button class="btn primary" type="submit">検索</button>
+      </form>
+      ${cr.note ? `<p class="small">${esc(cr.note)}</p>` : ''}
+      ${want ? `<p class="muted small">番号「${esc(want)}」に一致する商品を先頭に表示しています。</p>` : ''}
+      ${cr.error ? `<div class="notice">${esc(cr.error)}</div>` : ''}
+      ${cr.items.length ? `<p class="muted small">${cr.total}件中 ${cr.items.length}件を表示</p>
+        <div class="cr-grid">${scored.map(({ item, i, p, hit, used, sold }) => `
+          <button type="button" class="cr-item${hit ? ' hit' : ''}" data-action="cr-pick" data-idx="${i}">
+            <span class="cr-img"><img src="${esc(item.thumb)}" loading="lazy" referrerpolicy="no-referrer" alt=""></span>
+            <span class="cr-name">${esc(p.name)}</span>
+            <span class="cr-meta">${esc([p.rarity, p.number, p.setCode].filter(Boolean).join(' · '))}</span>
+            <span class="cr-badges">${hit ? '<span class="badge ok">番号一致</span>' : ''}${used ? `<span class="badge warn">${esc(p.condRank)}</span>` : ''}${sold ? '<span class="badge">売切</span>' : ''}</span>
+          </button>`).join('')}</div>
+        ${cr.items.length < cr.total ? `<div class="row center"><button type="button" class="btn" data-action="cr-more" ${cr.loading ? 'disabled' : ''}>もっと見る</button></div>` : ''}`
+      : cr.loading ? '' : cr.page ? '<p class="muted">見つかりませんでした。キーワードを短くしてみてください（例: カード名だけ）。</p>' : ''}
+      ${cr.loading ? '<p class="muted small" aria-live="polite">検索中…</p>' : ''}
+    </div>
+    <footer class="dlg-foot">
+      <span class="muted small">画像・名称の出典: カードラッシュ</span><span class="spacer"></span>
+      ${walk ? '<button type="button" class="btn ghost" data-action="cr-walk-end">照合を終了</button><button type="button" class="btn" data-action="cr-skip">このカードを飛ばす</button>' : '<button type="button" class="btn ghost" data-action="cr-close">閉じる</button>'}
+    </footer>`;
+}
+
+// 編集中のカードに対して検索を開く
+function openCrForEditing() {
+  const c = state.editing;
+  const pos = state.navIds.indexOf(c.id);
+  openCrPicker({
+    queries: CR.queryCandidates(c.name && c.name !== c.rawTitle ? c.name : c.rawTitle || c.name, c.number),
+    number: c.number,
+    heading: state.crWalk && pos >= 0 ? `カードラッシュで照合（${pos + 1} / ${state.navIds.length}）` : 'カードラッシュから選ぶ',
+    onPick: async (item) => {
+      syncForm();
+      await applyCardrush(state.editing, item);
+      // 保存はフォームの値を読み直すので、先に反映後の内容でフォームを描き直す
+      renderCardForm();
+      if (state.crWalk) {
+        // 照合中は保存して次のカードへ
+        if (!(await commitEditing())) return;
+        refreshView();
+        if (pos >= 0 && pos < state.navIds.length - 1) await goCard(1);
+        else { state.crWalk = false; renderCardForm(); toast('照合が終わりました', 'ok'); }
+      } else {
+        toast('カードラッシュの情報を反映しました。内容を確認して保存してください', 'ok');
+      }
+    },
+  });
+}
+
 function closeCard() {
   if (editingChanged() && !confirm('保存していない変更があります。破棄して閉じますか？')) return;
   cardDlg().close();
@@ -1529,7 +1685,9 @@ function renderCardForm() {
           <div class="img-box">${img ? `<img src="${esc(img)}" referrerpolicy="no-referrer" alt="">` : ''}<span class="ph">画像なし</span></div>
           <label class="btn small">画像を選択<input type="file" accept="image/*" data-change="pick-image" hidden></label>
           ${img ? '<button type="button" class="btn small ghost" data-action="clear-image">画像を外す</button>' : ''}
-          <button type="button" class="btn small" data-action="ai-identify">✨ AIでカード判定</button>
+          <button type="button" class="btn small" data-action="cr-card">🔎 カードラッシュから取得</button>
+          <button type="button" class="btn small ghost" data-action="ai-identify">✨ AIでカード判定</button>
+          ${c.cardrushUrl ? `<a class="small" href="${esc(c.cardrushUrl)}" target="_blank" rel="noopener">カードラッシュで見る</a>` : ''}
           ${c.mailLink ? `<a class="small" href="${esc(c.mailLink)}" target="_blank" rel="noopener">購入メールを開く</a>` : ''}
         </div>
         <div class="grid2">
@@ -1742,6 +1900,43 @@ const actions = {
     return openCard(el.dataset.id, {}, inResults ? state.resultIds : null);
   },
   'close-card': () => closeCard(),
+  'cr-card': () => { syncForm(); openCrForEditing(); },
+  'cr-cand': (el) => {
+    const cand = state.candidates[Number(el.dataset.idx)];
+    openCrPicker({
+      queries: CR.queryCandidates(cand.ai?.name || cand.rawTitle, cand.ai?.number),
+      number: cand.ai?.number || '',
+      onPick: (item) => { cand.cr = item; if (cand.status !== 'imported') cand.checked = true; renderScanResults(); },
+    });
+  },
+  'cr-pick': async (el) => {
+    const cr = state.cr;
+    const item = cr.items[Number(el.dataset.idx)];
+    $('#cr-dialog').close();
+    state.cr = null;
+    if (cardDlg().open) toast('カードラッシュから取得中…');
+    await cr.onPick(item);
+  },
+  'cr-more': () => crSearch(state.cr.page + 1),
+  'cr-close': () => { state.cr = null; $('#cr-dialog').close(); },
+  'cr-skip': async () => { state.cr = null; $('#cr-dialog').close(); if (state.navIds.indexOf(state.editing.id) < state.navIds.length - 1) await goCard(1); else state.crWalk = false; },
+  'cr-walk-end': () => { state.crWalk = false; state.cr = null; $('#cr-dialog').close(); },
+  'cr-walk': async () => {
+    // 選択したカードを一覧の並び順で1枚ずつ照合
+    const ids = state.resultIds.filter((id) => state.selected.has(id));
+    if (!ids.length) return;
+    if (!state.settings.cardrushProxy) { toast('設定画面で「カードラッシュ連携URL」を入力してください', 'error'); return; }
+    state.crWalk = true;
+    await openCard(ids[0], {}, ids);
+  },
+  'cr-test': async (el) => {
+    el.disabled = true;
+    try {
+      await CR.ping(state.settings.cardrushProxy);
+      const r = await CR.search(state.settings.cardrushProxy, 'ピカチュウ');
+      toast(`接続できました（「ピカチュウ」の検索結果 ${r.total}件）`, 'ok');
+    } finally { el.disabled = false; }
+  },
   'card-prev': () => goCard(-1),
   'card-next': () => goCard(1),
   'save-next': async () => {
@@ -2008,6 +2203,13 @@ async function init() {
     if (editingChanged() && !confirm('保存していない変更があります。破棄して閉じますか？')) e.preventDefault();
   });
   $('#bulk-form').addEventListener('submit', guard(async (e) => { e.preventDefault(); await applyBulk(); }));
+  cardDlg().addEventListener('close', () => { state.crWalk = false; });
+  $('#cr-dialog').addEventListener('submit', (e) => {
+    if (e.target.id !== 'cr-form') return;
+    e.preventDefault();
+    state.cr.q = $('#cr-q').value.trim();
+    guard(crSearch)(1);
+  });
   $('#set-form').addEventListener('submit', guard(async (e) => { e.preventDefault(); await saveSet(); }));
 
   // 入力候補
