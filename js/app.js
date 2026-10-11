@@ -127,7 +127,7 @@ function loadUi() {
 }
 function saveUi() {
   const { q, ...filters } = state.filters;
-  try { localStorage.setItem(UI_KEY, JSON.stringify({ filters, filtersOpen: state.filtersOpen, setSort: state.setSort })); } catch { /* 保存不可の環境 */ }
+  try { localStorage.setItem(UI_KEY, JSON.stringify({ filters, filtersOpen: state.filtersOpen })); } catch { /* 保存不可の環境 */ }
 }
 const savedUi = loadUi();
 
@@ -145,8 +145,6 @@ const state = {
   selectMode: false,
   selected: new Set(),
   wishQ: '',
-  setQ: '',
-  setSort: savedUi.setSort || 'release',
   candidates: [],
   showAllCandidates: false,
   scanning: false,
@@ -158,7 +156,6 @@ const state = {
   cr: null, // カードラッシュ検索ダイアログの状態
   crWalk: false, // 選択したカードを順にカードラッシュで照合中
   marketRun: null, // 相場の一括更新の進捗
-  editingSet: null,
   dirty: false,
   localHandle: null,
   syncing: false,
@@ -832,7 +829,6 @@ async function ignoreCandidates() {
 const NAV = [
   ['dashboard', 'ホーム', '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>'],
   ['collection', 'コレクション', '<rect x="3" y="4" width="7" height="9" rx="1"/><rect x="14" y="4" width="7" height="9" rx="1"/><rect x="3" y="15" width="18" height="5" rx="1"/>'],
-  ['sets', 'セット', '<path d="M4 6h16M4 12h16M4 18h10"/>'],
   ['wish', 'ほしいもの', '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>'],
   ['import', '取り込み', '<path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v3h16v-3"/>'],
   ['settings', '設定', '<circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10l2.1 2.1M4.9 19.1l2.1-2.1m10-10l2.1-2.1"/>'],
@@ -859,14 +855,13 @@ function updateSyncButton() {
 function render() {
   renderNav();
   const main = $('#main');
-  const views = { dashboard: viewDashboard, collection: viewCollection, sets: viewSets, wish: viewWish, import: viewImport, settings: viewSettings };
+  const views = { dashboard: viewDashboard, collection: viewCollection, wish: viewWish, import: viewImport, settings: viewSettings };
   main.innerHTML = (views[state.view] || viewDashboard)();
   if (state.view === 'dashboard') {
     const el = $('#asset-chart');
     if (el) lineChart(el, costSeries());
   }
   if (state.view === 'collection') renderResults({ keep: true });
-  if (state.view === 'sets') renderSetList();
   if (state.view === 'settings') updateCrStatus();
   if (state.view === 'import') renderScanResults();
   updateSyncButton();
@@ -1331,80 +1326,6 @@ async function applyBulk() {
   refreshView();
 }
 
-// ---------- セット（コンプ率） ----------
-
-function setStats() {
-  const groups = new Map();
-  for (const c of live('owned')) {
-    const k = setKey(c);
-    if (!k) continue;
-    if (!groups.has(k)) groups.set(k, { key: k, code: c.setCode, name: c.setName, cards: [] });
-    const g = groups.get(k);
-    g.code ||= c.setCode;
-    g.name ||= c.setName;
-    g.cards.push(c);
-  }
-  // マスタに登録されたセット（カード未所持でも表示）
-  for (const m of state.sets.filter((x) => !x.deleted)) {
-    const k = String(m.code || m.name).trim().toLowerCase();
-    const g = groups.get(k) || { key: k, code: m.code, name: m.name, cards: [] };
-    g.master = m;
-    g.code = m.code || g.code;
-    g.name = m.name || g.name;
-    groups.set(k, g);
-  }
-  return [...groups.values()].map((g) => {
-    const nums = g.cards.map((c) => P.parseCardNumber(c.number)).filter(Boolean);
-    // 総数: マスタ > カード番号の分母で最も多いもの
-    const denoms = nums.map((n) => n.total).filter(Boolean);
-    const mode = denoms.sort((a, b) => denoms.filter((v) => v === b).length - denoms.filter((v) => v === a).length)[0];
-    const total = num(g.master?.total) || mode || 0;
-    const distinct = new Set(nums.map((n) => n.n));
-    const base = total ? [...distinct].filter((n) => n <= total).length : distinct.size;
-    const secret = total ? [...distinct].filter((n) => n > total).length : 0;
-    return { ...g, total, base, secret, value: sum(g.cards, cardCost), qty: sum(g.cards, qty) };
-  }).sort((a, b) => String(b.master?.releaseDate || '').localeCompare(String(a.master?.releaseDate || '')) || b.value - a.value);
-}
-
-function viewSets() {
-  return `
-    <div class="panel-head"><h1>セット別コンプリート</h1><button class="btn primary" data-action="new-set">＋ セットを登録</button></div>
-    <p class="muted small">カードの「セットコード / セット名」と「番号（例: 198/190）」から自動集計します。分母を超える番号（SR・SAR など）はシークレットとして別カウントします。</p>
-    <div class="toolbar">
-      <input type="search" class="grow" placeholder="セットを検索" value="${esc(state.setQ)}" data-filter="setQ" aria-label="セットを検索">
-      <select data-filter="setSort" aria-label="並び替え">
-        ${[['release', '発売日が新しい順'], ['progress', 'コンプ率が高い順'], ['qty', '所持枚数が多い順'], ['name', 'セットコード順']].map(([v, l]) => opt(v, l, state.setSort)).join('')}
-      </select>
-    </div>
-    <div id="set-results"></div>`;
-}
-
-function renderSetList() {
-  const el = $('#set-results');
-  if (!el) return;
-  const q = state.setQ.toLowerCase();
-  const pctOf = (g) => (g.total ? Math.min(100, (g.base / g.total) * 100) : 0);
-  const sorters = {
-    release: (a, b) => String(b.master?.releaseDate || '').localeCompare(String(a.master?.releaseDate || '')) || b.qty - a.qty,
-    progress: (a, b) => pctOf(b) - pctOf(a),
-    qty: (a, b) => b.qty - a.qty,
-    name: (a, b) => String(a.code || a.name).localeCompare(String(b.code || b.name), 'ja', { numeric: true }),
-  };
-  const stats = setStats().filter((g) => !q || `${g.code} ${g.name}`.toLowerCase().includes(q)).sort(sorters[state.setSort] || sorters.release);
-  el.innerHTML = stats.length ? `<p class="muted small">${stats.length}セット</p><div class="set-list">${stats.map((g) => {
-    const pct = pctOf(g);
-    return `<div class="set-row">
-      <button class="set-main" data-action="filter-set" data-key="${esc(g.key)}">
-        <span class="set-title"><span class="code">${esc(g.code || '')}</span> ${esc(g.name || '')}</span>
-        <span class="bar"><i style="width:${pct}%"></i></span>
-        <span class="set-nums">${g.total ? `${g.base} / ${g.total}（${pct.toFixed(0)}%）` : `${g.base}種`}${g.secret ? ` ＋シークレット ${g.secret}` : ''}
-          ・ ${g.qty}枚 ・ ${yen(g.value)}</span>
-      </button>
-      <button class="btn small ghost" data-action="edit-set" data-key="${esc(g.key)}">編集</button>
-    </div>`;
-  }).join('')}</div>` : emptyState(q ? '一致するセットがありません。' : 'セット情報のあるカードがまだありません。カードにセットコードと番号を入れるか、AIでカード判定するとここに表示されます。');
-}
-
 // ---------- ほしいもの ----------
 
 function viewWish() {
@@ -1650,6 +1571,16 @@ async function commitEditing() {
       return true;
     }
   }
+  // 所持カードは保存時に相場（カードラッシュの価格一覧）を取得する。拡張機能がない環境では飛ばす
+  if (c.status === 'owned' && c.name && marketNeedsFetch(c)) {
+    try {
+      await CR.ping();
+      toast('相場を取得しています…');
+      c.market = await fetchMarket(c);
+    } catch (e) {
+      if (!(e instanceof CR.NoExtensionError)) toast(`相場を取得できませんでした（カードは保存します）: ${e.message}`, 'error');
+    }
+  }
   // 状態写真: 追加分を保存し、外した分は削除の墓標にする
   const t = nowIso();
   const persisted = new Set(state.cards.find((x) => x.id === c.id)?.cond?.photos || []);
@@ -1678,6 +1609,10 @@ async function goCard(delta) {
 // ================= 相場（カードラッシュ販売価格） =================
 
 const MARKET_FRESH_MS = 24 * 60 * 60 * 1000;
+
+// 価格一覧の取得（取り直し）が必要か: 未取得・旧形式・カード自体の変更・24時間経過
+const marketNeedsFetch = (c) => !c.market?.at || (!c.market.quotes && !c.market.error)
+  || c.market.sig !== marketSig(c) || Date.now() - new Date(c.market.at).getTime() > MARKET_FRESH_MS;
 const verNum = (v) => String(v || '0').split('.').reduce((a, x) => a * 1000 + Number(x || 0), 0);
 
 // 1枚分の価格一覧を取得する（検索語を順に試し、同じカードの状態別・鑑定別の商品を集める）
@@ -1707,8 +1642,7 @@ async function updateMarket(cards, { force = false } = {}) {
   const v = await CR.ping();
   if (verNum(v) < verNum('1.1.0')) throw new Error(`カードラッシュ連携の拡張機能（v${v}）が古いため価格を取得できません。chrome://extensions で拡張機能を更新してください`);
   // 24時間以内に取得済みで、カード自体（名前・番号など）も変わっていないものは飛ばす。旧形式のデータは取り直す
-  const todo = cards.filter((c) => force || !c.market?.at || (!c.market.quotes && !c.market.error)
-    || c.market.sig !== marketSig(c) || Date.now() - new Date(c.market.at).getTime() > MARKET_FRESH_MS);
+  const todo = cards.filter((c) => force || marketNeedsFetch(c));
   if (!todo.length) { toast('すべて24時間以内に取得済みです（「すべて取り直す」で再取得できます）'); return; }
   const run = { done: 0, total: todo.length, ok: 0, ng: 0, stop: false };
   state.marketRun = run;
@@ -2102,43 +2036,6 @@ async function aiIdentifyEditing(btn) {
   }
 }
 
-// ================= セット編集ダイアログ =================
-
-function openSet(key) {
-  const g = key ? setStats().find((x) => x.key === key) : null;
-  state.editingSet = g?.master ? structuredClone(g.master)
-    : { id: crypto.randomUUID(), code: g?.code || '', name: g?.name || '', total: g?.total || '', releaseDate: '' };
-  const m = state.editingSet;
-  const exists = state.sets.some((x) => x.id === m.id && !x.deleted);
-  $('#set-form').innerHTML = `
-    <header class="dlg-head"><h2>${exists ? 'セットを編集' : 'セットを登録'}</h2>
-      <button type="button" class="icon-btn" data-action="close-set" aria-label="閉じる">×</button></header>
-    <div class="dlg-body grid2">
-      ${fld('セットコード', 'code', m.code, 'text', 'placeholder="SV2a"')}
-      ${fld('セット名', 'name', m.name, 'text', 'placeholder="ポケモンカード151"')}
-      ${fld('収録数（分母）', 'total', m.total, 'number', 'min="1"')}
-      ${fld('発売日', 'releaseDate', m.releaseDate, 'date')}
-    </div>
-    <footer class="dlg-foot">
-      ${exists ? '<button type="button" class="btn danger ghost" data-action="delete-set">削除</button>' : ''}
-      <span class="spacer"></span>
-      <button type="button" class="btn ghost" data-action="close-set">キャンセル</button>
-      <button type="submit" class="btn primary">保存</button>
-    </footer>`;
-  $('#set-dialog').showModal();
-}
-
-async function saveSet() {
-  const fd = new FormData($('#set-form'));
-  const m = { ...state.editingSet, code: String(fd.get('code')).trim(), name: String(fd.get('name')).trim(), total: num(fd.get('total')) || '', releaseDate: fd.get('releaseDate') || '', updatedAt: nowIso() };
-  if (!m.code && !m.name) { toast('セットコードかセット名を入力してください', 'error'); return; }
-  await db.put('sets', m);
-  state.sets = [...state.sets.filter((x) => x.id !== m.id), m];
-  markDirty();
-  $('#set-dialog').close();
-  render();
-}
-
 // ================= イベント =================
 
 const actions = {
@@ -2290,7 +2187,6 @@ const actions = {
     saveUi();
     render();
   },
-  'filter-set': (el) => { Object.assign(state.filters, { q: '', set: el.dataset.key, rarity: '', grade: '', tag: '', cond: '', sort: 'number' }); saveUi(); state.view = 'collection'; render(); window.scrollTo(0, 0); },
   'filter-cond': (el) => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: el.dataset.cond }); saveUi(); state.view = 'collection'; render(); window.scrollTo(0, 0); },
   'toggle-select': () => { state.selectMode = !state.selectMode; state.selected.clear(); render(); },
   'select-all': () => { state.resultIds.forEach((id) => state.selected.add(id)); refreshView(); },
@@ -2304,17 +2200,6 @@ const actions = {
     state.selected.clear();
     toast(`${n}件を削除しました`);
     refreshView();
-  },
-  'new-set': () => openSet(null),
-  'edit-set': (el) => openSet(el.dataset.key),
-  'close-set': () => $('#set-dialog').close(),
-  'delete-set': async () => {
-    const tomb = { id: state.editingSet.id, deleted: true, updatedAt: nowIso() };
-    await db.put('sets', tomb);
-    state.sets = state.sets.map((x) => (x.id === tomb.id ? tomb : x));
-    markDirty();
-    $('#set-dialog').close();
-    render();
   },
   'scan-gmail': () => scanGmail(),
   'ai-one': (el) => aiCandidate(state.candidates[Number(el.dataset.idx)]),
@@ -2403,7 +2288,7 @@ document.addEventListener('keydown', (e) => {
   }
   // 「/」で検索欄へ
   if (e.key === '/' && !isTyping(e.target) && !document.querySelector('dialog[open]')) {
-    const search = $('#col-search') || $('[data-filter="setQ"]') || $('[data-filter="wishQ"]');
+    const search = $('#col-search') || $('[data-filter="wishQ"]');
     if (search) { e.preventDefault(); search.focus(); search.select(); }
   }
   // SVG の白かけ位置はキーボードでも切り替え可能に
@@ -2432,8 +2317,7 @@ document.addEventListener('change', (e) => {
     saveSettings();
     return;
   }
-  if (el.dataset.filter === 'setSort') { state.setSort = el.value; saveUi(); renderSetList(); return; }
-  if (el.dataset.filter && !['q', 'wishQ', 'setQ'].includes(el.dataset.filter)) {
+  if (el.dataset.filter && !['q', 'wishQ'].includes(el.dataset.filter)) {
     state.filters[el.dataset.filter] = el.type === 'checkbox' ? el.checked : el.value;
     saveUi();
     renderResults();
@@ -2456,7 +2340,6 @@ document.addEventListener('input', (e) => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => renderResults(), 180);
   }
-  if (el.dataset.filter === 'setQ') { state.setQ = el.value; renderSetList(); }
   if (el.dataset.filter === 'wishQ') {
     state.wishQ = el.value;
     const pos = el.selectionStart;
@@ -2492,7 +2375,6 @@ async function init() {
     state.cr.q = $('#cr-q').value.trim();
     guard(crSearch)(1);
   });
-  $('#set-form').addEventListener('submit', guard(async (e) => { e.preventDefault(); await saveSet(); }));
 
   // 入力候補
   $('#datalists').innerHTML = `
