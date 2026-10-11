@@ -422,3 +422,9 @@ tr .tick { position: static; display: inline-block; border-color: var(--line2); 
 .cr-badges { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip.sev-unchecked span { border-style: dashed; color: var(--muted); }
 .chip.sev-unchecked input:checked + span { background: var(--surface2); border-color: var(--line2); color: var(--text); }
+
+/* ===== 未開封 ===== */
+.badge.sealed { top: 6px; left: 6px; background: #0e7490; color: #fff; }
+.badge.sealed.second { top: 30px; }
+.badge.sealed-inline { background: #0e7490; color: #fff; }
+.fld-check { align-self: end; min-height: 38px; margin: 6px 0; }

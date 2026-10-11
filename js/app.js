@@ -259,7 +259,7 @@ function newCard(preset = {}) {
     id: crypto.randomUUID(),
     status: 'owned',
     name: '', rawTitle: '', rarity: '', setCode: '', setName: '', number: '',
-    quantity: 1, condition: '', grade: '未鑑定',
+    quantity: 1, condition: '', grade: '未鑑定', sealed: false,
     purchaseDate: today(), purchasePrice: '', shop: '', targetPrice: '',
     mailLink: '', gmailId: '', imageUrl: '', imageData: '',
     cond: emptyCond(), tags: [], memo: '',
@@ -537,7 +537,7 @@ const CSV_COLUMNS = [
   ['目標価格', (c) => c.targetPrice], ['タグ', (c) => (c.tags || []).join(' ')],
   ['メモ', (c) => c.memo], ['メールリンク', (c) => c.mailLink],
   // 状態チェック
-  ['状態評価', (c) => condOf(c).overall], ['点検日', (c) => condOf(c).inspectedAt],
+  ['未開封', (c) => (c.sealed ? '○' : '')], ['状態評価', (c) => condOf(c).overall], ['点検日', (c) => condOf(c).inspectedAt],
   ['センタリング(表)', (c) => { const r = centeringOf(condOf(c).centering.front, 'front'); return r ? centeringText(r) : ''; }],
   ['センタリング(裏)', (c) => { const r = centeringOf(condOf(c).centering.back, 'back'); return r ? centeringText(r) : ''; }],
   ...DEFECTS.map(([k, l]) => [l, (c) => { const v = condOf(c).defects[k]; return v && v !== 'none' ? SEVERITY_LABEL[v] : ''; }]), // 「なし」は空欄
@@ -611,6 +611,7 @@ async function importCsv(file) {
     // 状態チェック列（このアプリの CSV のみ。センタリングは比率しか残らないので取り込まない）
     const sevByLabel = Object.fromEntries(SEVERITY.map(([k, l]) => [l, k]));
     const posByLabel = Object.fromEntries(Object.entries(WH_LABEL).map(([k, l]) => [l, k]));
+    card.sealed = /^(○|◯|1|true|yes|未開封)$/i.test(get(r, '未開封')) || /未開封/.test(rawTitle);
     card.cond.overall = COND_RATINGS.some(([k]) => k === get(r, '状態評価')) ? get(r, '状態評価') : '';
     card.cond.inspectedAt = normDate(get(r, '点検日'));
     card.cond.note = get(r, '状態詳細メモ');
@@ -753,6 +754,7 @@ async function addCandidates() {
     shop: c.shop,
     mailLink: c.mailLink,
     gmailId: c.gmailId,
+    sealed: /未開封/.test(c.rawTitle),
     imageUrl: c.imageUrl,
   }));
   // カードラッシュで照合済みの候補は正式名と画像を反映
@@ -842,6 +844,7 @@ function tileHtml(c) {
       ${img ? `<img src="${esc(img)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" alt="">` : ''}
       <span class="ph">${esc(title(c).slice(0, 18))}</span>
       ${c.grade && c.grade !== '未鑑定' ? `<span class="badge grade">${esc(c.grade)}</span>` : ''}
+      ${c.sealed ? `<span class="badge sealed${c.grade && c.grade !== '未鑑定' ? ' second' : ''}">未開封</span>` : ''}
       ${qty(c) > 1 ? `<span class="badge qty">×${qty(c)}</span>` : ''}
       ${cond.overall ? `<span class="badge rating r-${esc(cond.overall)}" title="状態評価">${esc(cond.overall)}</span>` : ''}
       ${state.selectMode ? '<span class="tick" aria-hidden="true"></span>' : ''}
@@ -940,6 +943,7 @@ function viewDashboard() {
 const COND_FILTERS = [
   ...COND_RATINGS.map(([k, l]) => [k, `評価 ${l}`]),
   ['unrated', '未評価'], ['issues', '欠陥あり'], ['crease', '折れ・へこみあり'], ['unchecked-items', '欠陥に未確認の項目あり'], ['center-ng', 'センタリング基準外'],
+  ['sealed', '未開封'], ['opened', '未開封以外'],
 ];
 const SORTS = [
   ['added-desc', '登録が新しい順'], ['added-asc', '登録が古い順'], ['purchase-desc', '購入日が新しい順'], ['purchase-asc', '購入日が古い順'],
@@ -955,7 +959,7 @@ function filteredCards() {
     // 空白区切りの AND 検索
     const words = f.q.toLowerCase().split(/\s+/).filter(Boolean);
     list = list.filter((c) => {
-      const text = [c.name, c.rawTitle, c.setName, c.setCode, c.number, c.rarity, c.memo, c.grade, c.shop, c.condition, (c.tags || []).join(' ')].join(' ').toLowerCase();
+      const text = [c.name, c.rawTitle, c.setName, c.setCode, c.number, c.rarity, c.memo, c.grade, c.shop, c.condition, c.sealed ? '未開封' : '', (c.tags || []).join(' ')].join(' ').toLowerCase();
       return words.every((w) => text.includes(w));
     });
   }
@@ -970,6 +974,8 @@ function filteredCards() {
       if (f.cond === 'issues') return activeDefects(cond).length > 0;
       if (f.cond === 'crease') return ['crease', 'dent'].some((k) => isDefect(cond.defects[k]));
       if (f.cond === 'unchecked-items') return uncheckedDefects(cond).length > 0;
+      if (f.cond === 'sealed') return !!c.sealed;
+      if (f.cond === 'opened') return !c.sealed;
       if (f.cond === 'center-ng') return ['front', 'back'].some((k) => centeringOf(cond.centering[k], k)?.ok === false);
       return cond.overall === f.cond;
     });
@@ -1103,7 +1109,7 @@ function rowHtml(c) {
     <td><span class="thumb">${img ? `<img src="${esc(img)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" alt="">` : ''}</span></td>
     <td><strong>${esc(title(c))}</strong><br><span class="muted small">${esc(c.rarity)}</span></td>
     <td class="small">${esc([c.setCode, c.setName].filter(Boolean).join(' '))}<br>${esc(c.number)}</td>
-    <td>${esc(c.grade !== '未鑑定' ? c.grade : '')}</td>
+    <td>${esc(c.grade !== '未鑑定' ? c.grade : '')}${c.sealed ? ' <span class="badge sealed-inline">未開封</span>' : ''}</td>
     <td>${cond.overall ? `<span class="badge rating r-${esc(cond.overall)}">${esc(cond.overall)}</span>` : '<span class="muted small">未評価</span>'}</td>
     <td class="small">${esc(activeDefects(cond).map(([k, l]) => `${l}(${SEVERITY_LABEL[cond.defects[k]]})`).join('、'))}</td>
     <td class="r">${qty(c)}</td><td class="r">${yen(c.purchasePrice || null)}</td><td class="small">${esc(c.purchaseDate || '')}</td></tr>`;
@@ -1193,6 +1199,7 @@ function openBulk() {
         <label class="fld"><span>区分</span><select name="status">${opt('', '変更しない', '')}${opt('owned', '所持', '')}${opt('wish', 'ほしいもの', '')}</select></label>
         <label class="fld"><span>状態の総合評価</span><select name="overall">${opt('', '変更しない', '')}${opt('-', '未評価に戻す', '')}${COND_RATINGS.map(([k, l]) => opt(k, l, '')).join('')}</select></label>
         ${fld('点検日', 'inspectedAt', '', 'date')}
+        <label class="fld"><span>未開封</span><select name="sealed">${opt('', '変更しない', '')}${opt('yes', '未開封にする', '')}${opt('no', '未開封を外す', '')}</select></label>
         <label class="fld"><span>欠陥の項目</span><select name="defects">${opt('', '変更しない', '')}${opt('unchecked-to-none', '未確認の項目を「なし」にする', '')}${opt('all-unchecked', 'すべて「未確認」に戻す', '')}</select></label>
         ${fld('セットコード', 'setCode', '', 'text')}
         ${fld('セット名', 'setName', '', 'text')}
@@ -1225,6 +1232,7 @@ async function applyBulk() {
     for (const k of ['setCode', 'setName', 'grade', 'shop', 'purchaseDate']) if (v(k)) c[k] = v(k);
     if (v('overall')) c.cond.overall = v('overall') === '-' ? '' : v('overall');
     if (v('inspectedAt')) c.cond.inspectedAt = v('inspectedAt');
+    if (v('sealed')) c.sealed = v('sealed') === 'yes';
     if (v('defects') === 'unchecked-to-none') DEFECTS.forEach(([k]) => { if (c.cond.defects[k] === 'unchecked') c.cond.defects[k] = 'none'; });
     if (v('defects') === 'all-unchecked') { DEFECTS.forEach(([k]) => { c.cond.defects[k] = 'unchecked'; }); c.cond.whiteMarks = { front: [], back: [] }; }
     if (add.length || rm.size) c.tags = [...new Set([...(c.tags || []), ...add])].filter((t) => !rm.has(t));
@@ -1528,7 +1536,7 @@ async function commitEditing() {
   const isNew = !state.cards.some((x) => x.id === c.id && !x.deleted);
   // 同じセット・番号・鑑定のカードが登録済みなら枚数をまとめるか確認
   if (isNew && c.status === 'owned' && c.number) {
-    const dup = live('owned').find((x) => setKey(x) === setKey(c) && x.number === c.number && (x.grade || '未鑑定') === (c.grade || '未鑑定'));
+    const dup = live('owned').find((x) => setKey(x) === setKey(c) && x.number === c.number && (x.grade || '未鑑定') === (c.grade || '未鑑定') && !!x.sealed === !!c.sealed);
     if (dup && confirm(`同じカード「${title(dup)}」（${[dup.setCode, dup.number, dup.grade !== '未鑑定' ? dup.grade : ''].filter(Boolean).join(' ')}）が登録済みです。\n\nOK：登録済みのカードの枚数を +${qty(c)} する\nキャンセル：別のカードとして登録する`)) {
       const d = structuredClone(dup);
       d.quantity = qty(d) + qty(c);
@@ -1575,6 +1583,7 @@ async function applyCardrush(c, item) {
     // セット名は登録済みのセットから補う（なければ空にしてセット型番でまとめる）
     c.setName = state.sets.find((m) => !m.deleted && String(m.code).toLowerCase() === p.setCode.toLowerCase())?.name || '';
   }
+  if (p.sealed) c.sealed = true;
   c.cardrushId = item.id;
   c.cardrushUrl = item.url;
   c.imageUrl = item.image;
@@ -1746,6 +1755,7 @@ function renderCardForm() {
           ${fld('セットコード', 'setCode', c.setCode, 'text', 'placeholder="S4a"')}
           ${fld('セット名', 'setName', c.setName, 'text', 'placeholder="シャイニースターV"')}
           ${fld('鑑定', 'grade', c.grade, 'text', 'list="dl-grade"')}
+          <label class="check fld-check"><input type="checkbox" name="sealed" ${c.sealed ? 'checked' : ''}> 未開封<span class="muted small">（透明パック入りのプロモなど）</span></label>
           ${fld('枚数', 'quantity', c.quantity, 'number', 'min="1" step="1"')}
           ${c.status === 'wish' ? fld('目標価格（円）', 'targetPrice', c.targetPrice, 'number', 'min="0"') : fld('購入価格（円・1枚）', 'purchasePrice', c.purchasePrice, 'number', 'min="0"')}
           ${c.status === 'wish' ? '' : fld('購入日', 'purchaseDate', c.purchaseDate, 'date')}
@@ -1790,6 +1800,7 @@ function condSectionHtml(c) {
             <button type="button" class="btn small ghost" data-action="cond-today">今日</button>
           </div></div>
 
+        ${c.sealed ? '<p class="notice small">未開封のカードです。パック越しに確認できる範囲で状態を記録してください（見えない項目は「未確認」のままで構いません）。</p>' : ''}
         <h4>総合評価</h4>
         <div class="chips">${chip('cond.overall', '', '未評価', cond.overall)}${COND_RATINGS.map(([k, l]) => chip('cond.overall', k, l, cond.overall, `r-${k}`)).join('')}</div>
         ${fld('ひとこと', 'condition', c.condition, 'text', 'list="dl-cond" placeholder="例: 美品・スリーブ保管"')}
@@ -1853,11 +1864,14 @@ function syncForm() {
       let o = c.cond;
       path.slice(0, -1).forEach((p) => { o = o[p]; });
       o[path[path.length - 1]] = String(v).trim();
-    } else if (k === 'tags') c.tags = splitList(v);
+    } else if (k === 'sealed') continue;
+    else if (k === 'tags') c.tags = splitList(v);
     else if (k === 'quantity') c.quantity = Math.max(1, Math.floor(num(v)) || 1);
     else if (k === 'purchasePrice' || k === 'targetPrice') c[k] = v === '' ? '' : num(v);
     else c[k] = typeof v === 'string' ? v.trim() : v;
   }
+  const sealed = cardForm().querySelector('[name="sealed"]');
+  if (sealed) c.sealed = sealed.checked;
 }
 
 function applyAiResult(c, r) {
@@ -2192,7 +2206,7 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('change', (e) => {
   const el = e.target;
   if (el.dataset.change && changeActions[el.dataset.change]) { guard(changeActions[el.dataset.change])(el); return; }
-  if (el.name === 'status' && el.closest('#card-form')) { syncForm(); renderCardForm(); return; }
+  if ((el.name === 'status' || el.name === 'sealed') && el.closest('#card-form')) { syncForm(); renderCardForm(); return; }
   if (el.dataset.setting) {
     const k = el.dataset.setting;
     state.settings[k] = el.type === 'checkbox' ? el.checked : el.type === 'number' ? num(el.value) : el.value.trim();

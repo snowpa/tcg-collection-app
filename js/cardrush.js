@@ -47,7 +47,8 @@ export const openSite = () => call({ action: 'open' });
 
 /**
  * 「〔状態B〕マリィ【SR】{198/190}」+ 型番「s4a」を分解する
- * @returns {{name:string, rarity:string, number:string, setCode:string, condRank:string}}
+ * 未開封品は【未開封パック】【未開封BOX】のようにレアリティ欄に書かれる
+ * @returns {{name:string, rarity:string, number:string, setCode:string, condRank:string, sealed:boolean}}
  */
 export function parseItem(item) {
   let s = String(item.name || '').trim();
@@ -58,12 +59,15 @@ export function parseItem(item) {
   if (num) s = s.slice(0, num.index).trim();
   const rar = s.match(/【([^】]*)】\s*$/);
   if (rar) s = s.slice(0, rar.index).trim();
-  const rarity = rar && rar[1] !== '-' ? rar[1] : '';
-  return { name: s, rarity, number: num ? num[1].trim() : '', setCode: String(item.model || '').trim(), condRank: rank ? rank[1] : '' };
+  let rarity = rar && rar[1] !== '-' ? rar[1] : '';
+  const sealed = /未開封/.test(rarity) || /未開封/.test(s);
+  if (/^未開封/.test(rarity)) rarity = '';
+  s = s.replace(/[(（【]未開封[)）】]/g, '').trim();
+  return { name: s, rarity, number: num && num[1].trim() !== '-' ? num[1].trim() : '', setCode: String(item.model || '').trim(), condRank: rank ? rank[1] : '', sealed };
 }
 
 // フリマの商品名などから検索語を作る（ノイズになりやすい語を除く）
-const NOISE = /(ポケモンカード(ゲーム)?|ポケカ|美品|完美品|極美品|即日発送|即発送|匿名配送|送料無料|まとめ売り|psa\s*\d+|bgs\s*[\d.]+|鑑定品?|未使用|新品|正規品|本物|1円|スタート|状態良好?|プロモ|promo)/gi;
+const NOISE = /(ポケモンカード(ゲーム)?|ポケカ|美品|完美品|極美品|即日発送|即発送|匿名配送|送料無料|まとめ売り|psa\s*\d+|bgs\s*[\d.]+|鑑定品?|未使用|新品|正規品|本物|1円|スタート|状態良好?|未開封|プロモ|promo)/gi;
 export function queryFrom(text) {
   return String(text || '')
     .replace(/[【】\[\]（）()「」『』{}〔〕<>＜＞・/／|｜!！?？★☆♪#＃]/g, ' ')
