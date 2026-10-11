@@ -4,15 +4,18 @@ async function call(proxyUrl, params) {
   if (!proxyUrl) throw new Error('設定画面で「カードラッシュ連携URL」（GAS ウェブアプリのURL）を入力してください');
   const u = new URL(proxyUrl);
   Object.entries(params).forEach(([k, v]) => u.searchParams.set(k, v));
+  // GAS のデプロイ設定が違うと、JSON ではなく Google のログイン画面が返る（またはCORSで読めない）
+  const DEPLOY_HINT = 'GAS の「デプロイを管理」で、次のユーザーとして実行「自分」、アクセスできるユーザー「全員」（「Google アカウントを持つ全員」ではない）にして、新しいバージョンでデプロイし直してください';
   let res;
   try {
     res = await fetch(u, { redirect: 'follow' });
   } catch {
-    throw new Error('カードラッシュ連携URLに接続できません。URL と、GAS のデプロイ設定（アクセスできるユーザー: 全員）を確認してください');
+    throw new Error(`カードラッシュ連携URLに接続できません。${DEPLOY_HINT}`);
   }
   const text = await res.text();
   let json;
   try { json = JSON.parse(text); } catch {
+    if (/accounts\.google\.com|ServiceLogin|<html/i.test(text)) throw new Error(`中継スクリプトがログインを求めています。${DEPLOY_HINT}`);
     throw new Error('カードラッシュ連携URLの応答が正しくありません。GAS を「ウェブアプリ」としてデプロイしたURL（…/exec）か確認してください');
   }
   if (json.error) throw new Error(json.error);
