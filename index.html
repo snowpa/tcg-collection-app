@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>トレカ・コレクション</title>
+  <meta name="description" content="トレーディングカードの所持・相場・コンプ率を管理するWebアプリ">
+  <meta name="theme-color" content="#1f6feb">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-head">
+    <div class="brand"><img src="icon.svg" alt="" width="28" height="28"><span>トレカ・コレクション</span></div>
+    <button id="sync-btn" class="sync-btn" data-action="sync-now" title="Googleドライブ / ローカルファイルにバックアップ">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18a5 5 0 0 1-.6-9.96A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9H7z"/></svg><span>バックアップ済</span>
+    </button>
+  </header>
+  <nav id="nav" class="nav" aria-label="メインメニュー"></nav>
+  <main id="main" class="main"></main>
+
+  <dialog id="card-dialog" class="dlg"><form id="card-form" method="dialog" novalidate></form></dialog>
+  <dialog id="set-dialog" class="dlg small"><form id="set-form" method="dialog"></form></dialog>
+  <div id="datalists"></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <noscript>このアプリを使うには JavaScript を有効にしてください。</noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
