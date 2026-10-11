@@ -12,7 +12,6 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', 
 const num = (v) => { const n = Number(String(v ?? '').replace(/[¥￥,円\s]/g, '')); return Number.isFinite(n) ? n : 0; };
 const yen = (n) => (n === null || n === undefined || n === '' || Number.isNaN(Number(n)))
   ? '-' : `${Number(n) < 0 ? '-' : ''}¥${Math.abs(Math.round(Number(n))).toLocaleString('ja-JP')}`;
-const signedYen = (n) => (n > 0 ? '+' : '') + yen(n);
 const today = () => new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
 const nowIso = () => new Date().toISOString();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -116,7 +115,7 @@ const state = {
   sets: [],
   processed: new Set(), // 取込済み・無視したメールID
   view: 'dashboard',
-  filters: { q: '', set: '', rarity: '', grade: '', tag: '', sort: 'added-desc', layout: 'grid' },
+  filters: { q: '', set: '', rarity: '', grade: '', tag: '', cond: '', sort: 'added-desc', layout: 'grid' },
   wishQ: '',
   candidates: [],
   showAllCandidates: false,
@@ -134,17 +133,89 @@ const live = (status) => state.cards.filter((c) => !c.deleted && (!status || c.s
 const qty = (c) => Math.max(1, Math.floor(num(c.quantity)) || 1);
 const title = (c) => c.name || c.rawTitle || '(名称未設定)';
 
-function latestPrice(c, at = null) {
-  const ps = (c.prices || []).filter((p) => p.date && (!at || p.date <= at)).sort((a, b) => a.date.localeCompare(b.date));
-  return ps.length ? num(ps[ps.length - 1].price) : null;
-}
-// 相場の記録がなければ購入価格を評価額とみなす
-const unitValue = (c, at = null) => latestPrice(c, at) ?? num(c.purchasePrice);
-const cardValue = (c) => unitValue(c) * qty(c);
 const cardCost = (c) => num(c.purchasePrice) * qty(c);
 const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
 
 const setKey = (c) => String(c.setCode || c.setName || '').trim().toLowerCase();
+
+// ================= カードの状態チェック =================
+
+// 総合評価
+const COND_RATINGS = [
+  ['S', 'S（完美品）'], ['A', 'A（美品）'], ['B', 'B（小傷あり）'], ['C', 'C（傷・白かけが目立つ）'], ['D', 'D（ダメージ大）'],
+];
+// 欠陥の種類
+const DEFECTS = [
+  ['whitening', '白かけ'], ['dent', 'へこみ'], ['crease', '折れ'], ['scratch', '表面傷'],
+  ['holo', 'ホロ傷'], ['stain', '汚れ・シミ'], ['print', '印刷ズレ・初期傷'], ['warp', '反り'],
+];
+// 程度（none は「なし」）
+const SEVERITY = [['none', 'なし'], ['light', '軽微'], ['moderate', '目立つ'], ['heavy', '重度']];
+const SEVERITY_LABEL = Object.fromEntries(SEVERITY);
+// 白かけ位置（角4つ＋辺4つ）
+const WH_POS = ['tl', 't', 'tr', 'r', 'br', 'b', 'bl', 'l'];
+const WH_LABEL = { tl: '左上', t: '上辺', tr: '右上', r: '右辺', br: '右下', b: '下辺', bl: '左下', l: '左辺' };
+// センタリングの PSA10 目安（表 55/45・裏 75/25）
+const CENTER_LIMIT = { front: 55, back: 75 };
+
+function emptyCond() {
+  return {
+    inspectedAt: '',
+    overall: '',
+    centering: { front: { l: '', r: '', t: '', b: '' }, back: { l: '', r: '', t: '', b: '' } },
+    defects: Object.fromEntries(DEFECTS.map(([k]) => [k, 'none'])),
+    whiteMarks: { front: [], back: [] },
+    note: '',
+    photos: [],
+  };
+}
+
+// 旧データ（cond なし）にも対応して欠けている項目を補う
+function condOf(c) {
+  const e = emptyCond();
+  const x = c.cond || {};
+  return {
+    ...e, ...x,
+    centering: {
+      front: { ...e.centering.front, ...(x.centering?.front || {}) },
+      back: { ...e.centering.back, ...(x.centering?.back || {}) },
+    },
+    defects: { ...e.defects, ...(x.defects || {}) },
+    whiteMarks: { front: [...(x.whiteMarks?.front || [])], back: [...(x.whiteMarks?.back || [])] },
+    photos: [...(x.photos || [])],
+  };
+}
+
+// 枠の幅 a, b から比率（a 側の %）を求める
+function ratio(a, b) {
+  const x = num(a); const y = num(b);
+  if (!(x > 0 || y > 0) || a === '' || b === '') return null;
+  return Math.round((x / (x + y)) * 100);
+}
+
+// 片面のセンタリング結果 { lr, tb, worst, ok }
+function centeringOf(side, sideKey) {
+  const lr = ratio(side.l, side.r);
+  const tb = ratio(side.t, side.b);
+  if (lr === null && tb === null) return null;
+  const worst = Math.max(...[lr, tb].filter((v) => v !== null).map((v) => Math.max(v, 100 - v)));
+  return { lr, tb, worst, ok: worst <= CENTER_LIMIT[sideKey] };
+}
+
+function centeringText(r) {
+  if (!r) return '未計測';
+  const p = (v, a, b) => (v === null ? '' : `${a}${v} : ${b}${100 - v}`);
+  return [p(r.lr, '左', '右'), p(r.tb, '上', '下')].filter(Boolean).join(' ／ ');
+}
+
+const activeDefects = (cond) => DEFECTS.filter(([k]) => cond.defects[k] && cond.defects[k] !== 'none');
+
+// 一覧用の短い状態要約
+function condSummary(c) {
+  const cond = condOf(c);
+  const ds = activeDefects(cond).map(([k, l]) => `${l}(${SEVERITY_LABEL[cond.defects[k]]})`);
+  return ds.length ? ds.join('・') : cond.inspectedAt ? '目立つ欠陥なし' : '';
+}
 
 function newCard(preset = {}) {
   return {
@@ -154,7 +225,7 @@ function newCard(preset = {}) {
     quantity: 1, condition: '', grade: '未鑑定',
     purchaseDate: today(), purchasePrice: '', shop: '', targetPrice: '',
     mailLink: '', gmailId: '', imageUrl: '', imageData: '',
-    prices: [], forecast10y: '', tags: [], memo: '',
+    cond: emptyCond(), tags: [], memo: '',
     createdAt: nowIso(), updatedAt: nowIso(),
     ...preset,
   };
@@ -356,9 +427,16 @@ const CSV_COLUMNS = [
   ['セットコード', (c) => c.setCode], ['セット名', (c) => c.setName], ['番号', (c) => c.number],
   ['枚数', (c) => qty(c)], ['状態メモ', (c) => c.condition], ['鑑定', (c) => c.grade],
   ['購入日', (c) => c.purchaseDate], ['金額', (c) => c.purchasePrice], ['購入先', (c) => c.shop],
-  ['現在価格', (c) => latestPrice(c) ?? ''], ['評価額', (c) => cardValue(c)], ['損益', (c) => cardValue(c) - cardCost(c)],
-  ['目標価格', (c) => c.targetPrice], ['10年後予測', (c) => c.forecast10y], ['タグ', (c) => (c.tags || []).join(' ')],
+  ['目標価格', (c) => c.targetPrice], ['タグ', (c) => (c.tags || []).join(' ')],
   ['メモ', (c) => c.memo], ['メールリンク', (c) => c.mailLink],
+  // 状態チェック
+  ['状態評価', (c) => condOf(c).overall], ['点検日', (c) => condOf(c).inspectedAt],
+  ['センタリング(表)', (c) => { const r = centeringOf(condOf(c).centering.front, 'front'); return r ? centeringText(r) : ''; }],
+  ['センタリング(裏)', (c) => { const r = centeringOf(condOf(c).centering.back, 'back'); return r ? centeringText(r) : ''; }],
+  ...DEFECTS.map(([k, l]) => [l, (c) => { const v = condOf(c).defects[k]; return v && v !== 'none' ? SEVERITY_LABEL[v] : ''; }]),
+  ['白かけ位置(表)', (c) => condOf(c).whiteMarks.front.map((p) => WH_LABEL[p]).join(' ')],
+  ['白かけ位置(裏)', (c) => condOf(c).whiteMarks.back.map((p) => WH_LABEL[p]).join(' ')],
+  ['状態詳細メモ', (c) => condOf(c).note],
 ];
 
 function exportCsv() {
@@ -419,13 +497,19 @@ async function importCsv(file) {
       purchasePrice: num(get(r, '金額')) || '',
       shop: get(r, '購入先'),
       targetPrice: num(get(r, '目標価格')) || '',
-      forecast10y: get(r, '10年後予測'),
       tags: splitList(get(r, 'タグ').replace(/\s+/g, ',')),
       memo: get(r, 'メモ'),
       mailLink: link,
     });
-    const cur = num(get(r, '現在価格'));
-    if (cur) card.prices.push({ date: today(), price: cur, note: 'CSV取込' });
+    // 状態チェック列（このアプリの CSV のみ。センタリングは比率しか残らないので取り込まない）
+    const sevByLabel = Object.fromEntries(SEVERITY.map(([k, l]) => [l, k]));
+    const posByLabel = Object.fromEntries(Object.entries(WH_LABEL).map(([k, l]) => [l, k]));
+    card.cond.overall = COND_RATINGS.some(([k]) => k === get(r, '状態評価')) ? get(r, '状態評価') : '';
+    card.cond.inspectedAt = normDate(get(r, '点検日'));
+    card.cond.note = get(r, '状態詳細メモ');
+    DEFECTS.forEach(([k, l]) => { card.cond.defects[k] = sevByLabel[get(r, l)] || 'none'; });
+    card.cond.whiteMarks.front = get(r, '白かけ位置(表)').split(/\s+/).map((l) => posByLabel[l]).filter(Boolean);
+    card.cond.whiteMarks.back = get(r, '白かけ位置(裏)').split(/\s+/).map((l) => posByLabel[l]).filter(Boolean);
     if (link) existingLinks.add(link);
     cards.push(card);
   }
@@ -615,7 +699,7 @@ function render() {
   main.innerHTML = (views[state.view] || viewDashboard)();
   if (state.view === 'dashboard') {
     const el = $('#asset-chart');
-    if (el) lineChart(el, assetSeries());
+    if (el) lineChart(el, costSeries());
   }
   if (state.view === 'collection') renderResults();
   if (state.view === 'import') renderScanResults();
@@ -624,9 +708,8 @@ function render() {
 
 function tileHtml(c) {
   const img = c.imageData || c.imageUrl;
-  const v = cardValue(c);
-  const pl = v - cardCost(c);
-  const showPl = c.status === 'owned' && num(c.purchasePrice) > 0;
+  const cond = condOf(c);
+  const issues = activeDefects(cond).length;
   return `
   <button class="tile" data-action="open-card" data-id="${c.id}">
     <div class="tile-img">
@@ -634,12 +717,13 @@ function tileHtml(c) {
       <span class="ph">${esc(title(c).slice(0, 18))}</span>
       ${c.grade && c.grade !== '未鑑定' ? `<span class="badge grade">${esc(c.grade)}</span>` : ''}
       ${qty(c) > 1 ? `<span class="badge qty">×${qty(c)}</span>` : ''}
+      ${cond.overall ? `<span class="badge rating r-${esc(cond.overall)}" title="状態評価">${esc(cond.overall)}</span>` : ''}
     </div>
     <div class="tile-body">
       <div class="tile-name">${esc(title(c))}</div>
       <div class="tile-meta">${esc([c.rarity, c.setCode, c.number].filter(Boolean).join(' · ') || ' ')}</div>
-      <div class="tile-price"><span>${yen(c.status === 'wish' ? (latestPrice(c) ?? c.targetPrice) : v)}</span>
-        ${showPl ? `<span class="${pl >= 0 ? 'up' : 'down'}">${signedYen(pl)}</span>` : ''}</div>
+      <div class="tile-price"><span>${yen(c.status === 'wish' ? c.targetPrice || null : c.purchasePrice || null)}</span>
+        ${issues ? `<span class="warn-text" title="${esc(condSummary(c))}">要注意 ${issues}</span>` : ''}</div>
     </div>
   </button>`;
 }
@@ -650,29 +734,16 @@ function emptyState(msg, actions = '') {
 
 // ---------- ホーム（資産ダッシュボード） ----------
 
-function assetSeries() {
+// 購入額の累計推移
+function costSeries() {
   const owned = live('owned');
   const dates = new Set([today()]);
-  owned.forEach((c) => {
-    if (c.purchaseDate) dates.add(c.purchaseDate);
-    (c.prices || []).forEach((p) => p.date && dates.add(p.date));
-  });
-  const value = []; const cost = [];
-  for (const d of [...dates].sort()) {
-    let v = 0; let k = 0;
-    for (const c of owned) {
-      if ((c.purchaseDate || '0000') > d) continue;
-      v += unitValue(c, d) * qty(c);
-      k += cardCost(c);
-    }
-    const x = new Date(d).getTime();
-    value.push({ x, y: v });
-    cost.push({ x, y: k });
-  }
-  return [
-    { name: '評価額', color: 'var(--accent)', points: value },
-    { name: '取得総額', color: 'var(--line2)', points: cost },
-  ];
+  owned.forEach((c) => { if (c.purchaseDate) dates.add(c.purchaseDate); });
+  const points = [...dates].sort().map((d) => ({
+    x: new Date(d).getTime(),
+    y: sum(owned.filter((c) => (c.purchaseDate || '0000') <= d), cardCost),
+  }));
+  return [{ name: '累計購入額', color: 'var(--accent)', points }];
 }
 
 function backupNotice() {
@@ -698,34 +769,40 @@ function viewDashboard() {
       </div></section>`;
   }
   const cost = sum(owned, cardCost);
-  const value = sum(owned, cardValue);
-  const pl = value - cost;
-  const pct = cost ? (pl / cost) * 100 : 0;
-  const top = [...owned].sort((a, b) => cardValue(b) - cardValue(a)).slice(0, 5);
-  const gainers = owned.filter((c) => num(c.purchasePrice) > 0 && latestPrice(c) !== null)
-    .map((c) => ({ c, r: (unitValue(c) - num(c.purchasePrice)) / num(c.purchasePrice) }))
-    .sort((a, b) => b.r - a.r).slice(0, 5);
+  const checked = owned.filter((c) => condOf(c).inspectedAt || condOf(c).overall).length;
+  // 状態評価の内訳
+  const dist = COND_RATINGS.map(([k, l]) => [k, l, owned.filter((c) => condOf(c).overall === k).length]);
+  const unrated = owned.filter((c) => !condOf(c).overall).length;
+  const maxDist = Math.max(1, ...dist.map((d) => d[2]), unrated);
+  // 要注意: 折れ・へこみがある、または目立つ/重度の欠陥があるカード
+  const sevRank = { none: 0, light: 1, moderate: 2, heavy: 3 };
+  const alerts = owned.map((c) => {
+    const cond = condOf(c);
+    const score = Math.max(0, ...activeDefects(cond).map(([k]) => sevRank[cond.defects[k]] + (k === 'crease' || k === 'dent' ? 1 : 0)));
+    return { c, score };
+  }).filter((x) => x.score >= 2).sort((a, b) => b.score - a.score).slice(0, 6);
   const recent = [...owned].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 6);
-  const rankRow = (c, right) => `<li><button class="rank-row" data-action="open-card" data-id="${c.id}">
-      <span class="rank-name">${esc(title(c))}<small>${esc([c.rarity, c.grade !== '未鑑定' ? c.grade : ''].filter(Boolean).join(' · '))}</small></span>
-      <span class="rank-val">${right}</span></button></li>`;
+  const distRow = (key, label, n, filter) => `<li><button class="dist-row" data-action="filter-cond" data-cond="${filter}">
+      <span class="dist-label">${key ? `<span class="badge rating r-${key}">${key}</span>` : ''}${esc(label)}</span>
+      <span class="bar"><i style="width:${(n / maxDist) * 100}%"></i></span><span class="dist-n">${n}</span></button></li>`;
   return `
     ${backupNotice()}
     <section class="stats">
-      <div class="stat big"><span class="label">評価額</span><span class="val">${yen(value)}</span>
-        <span class="${pl >= 0 ? 'up' : 'down'}">${signedYen(pl)}（${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%）</span></div>
-      <div class="stat"><span class="label">取得総額</span><span class="val">${yen(cost)}</span></div>
+      <div class="stat big"><span class="label">購入総額</span><span class="val">${yen(cost)}</span></div>
       <div class="stat"><span class="label">所持枚数</span><span class="val">${sum(owned, qty)}枚</span><span class="muted small">${owned.length}種類</span></div>
+      <div class="stat"><span class="label">状態チェック済み</span><span class="val">${checked} / ${owned.length}</span></div>
       <div class="stat"><span class="label">ほしいもの</span><span class="val">${live('wish').length}件</span></div>
     </section>
-    <section class="panel"><h2>資産推移</h2><div id="asset-chart"></div>
-      <p class="muted small">評価額は各カードの最新の相場記録（なければ購入価格）× 枚数で計算しています。</p></section>
     <div class="two-col">
-      <section class="panel"><h2>評価額トップ5</h2><ol class="rank">${top.map((c) => rankRow(c, yen(cardValue(c)))).join('')}</ol></section>
-      <section class="panel"><h2>値上がり率トップ5</h2>${gainers.length
-        ? `<ol class="rank">${gainers.map(({ c, r }) => rankRow(c, `<span class="${r >= 0 ? 'up' : 'down'}">${r >= 0 ? '+' : ''}${(r * 100).toFixed(0)}%</span>`)).join('')}</ol>`
-        : '<p class="muted small">カード詳細で相場を記録すると表示されます。</p>'}</section>
+      <section class="panel"><h2>状態評価の内訳</h2><ul class="dist">
+        ${dist.map(([k, l, n]) => distRow(k, l.replace(/^.（|）$/g, ''), n, k)).join('')}
+        ${distRow('', '未評価', unrated, 'unrated')}</ul></section>
+      <section class="panel"><h2>要注意のカード</h2>${alerts.length
+        ? `<ul class="rank plain">${alerts.map(({ c }) => `<li><button class="rank-row" data-action="open-card" data-id="${c.id}">
+            <span class="rank-name">${esc(title(c))}<small>${esc(condSummary(c))}</small></span></button></li>`).join('')}</ul>`
+        : '<p class="muted small">折れ・へこみ、目立つ白かけなどがあるカードがここに表示されます。</p>'}</section>
     </div>
+    <section class="panel"><h2>購入額の推移</h2><div id="asset-chart"></div></section>
     <section class="panel"><div class="panel-head"><h2>最近追加したカード</h2>
       <button class="link" data-action="nav" data-view="collection">すべて見る</button></div>
       <div class="grid">${recent.map(tileHtml).join('')}</div></section>`;
@@ -745,12 +822,23 @@ function filteredCards() {
   if (f.rarity) list = list.filter((c) => c.rarity === f.rarity);
   if (f.grade) list = list.filter((c) => (f.grade === 'graded' ? c.grade && c.grade !== '未鑑定' : (c.grade || '未鑑定') === f.grade));
   if (f.tag) list = list.filter((c) => (c.tags || []).includes(f.tag));
+  if (f.cond) {
+    list = list.filter((c) => {
+      const cond = condOf(c);
+      if (f.cond === 'unrated') return !cond.overall;
+      if (f.cond === 'issues') return activeDefects(cond).length > 0;
+      if (f.cond === 'crease') return ['crease', 'dent'].some((k) => cond.defects[k] !== 'none');
+      if (f.cond === 'center-ng') return [['front', 'front'], ['back', 'back']].some(([s, k]) => centeringOf(cond.centering[s], k)?.ok === false);
+      return cond.overall === f.cond;
+    });
+  }
   const by = {
     'added-desc': (a, b) => String(b.createdAt).localeCompare(String(a.createdAt)),
     'purchase-desc': (a, b) => String(b.purchaseDate).localeCompare(String(a.purchaseDate)),
-    'value-desc': (a, b) => cardValue(b) - cardValue(a),
-    'value-asc': (a, b) => cardValue(a) - cardValue(b),
-    'profit-desc': (a, b) => (cardValue(b) - cardCost(b)) - (cardValue(a) - cardCost(a)),
+    'price-desc': (a, b) => num(b.purchasePrice) - num(a.purchasePrice),
+    'price-asc': (a, b) => num(a.purchasePrice) - num(b.purchasePrice),
+    // 状態評価順（S が先、未評価は最後）
+    cond: (a, b) => ('SABCD'.indexOf(condOf(a).overall) + 1 || 9) - ('SABCD'.indexOf(condOf(b).overall) + 1 || 9),
     name: (a, b) => title(a).localeCompare(title(b), 'ja'),
     number: (a, b) => setKey(a).localeCompare(setKey(b)) || (P.parseCardNumber(a.number)?.n ?? 9e9) - (P.parseCardNumber(b.number)?.n ?? 9e9),
   };
@@ -777,10 +865,12 @@ function viewCollection() {
       <select data-filter="set" aria-label="セット">${opt('', 'すべてのセット', f.set)}${setOptions().map(([k, l]) => opt(k, l, f.set)).join('')}</select>
       <select data-filter="rarity" aria-label="レアリティ">${opt('', 'レアリティ', f.rarity)}${rarities.map((r) => opt(r, r, f.rarity)).join('')}</select>
       <select data-filter="grade" aria-label="鑑定">${opt('', '鑑定', f.grade)}${opt('graded', '鑑定済みすべて', f.grade)}${grades.map((g) => opt(g, g, f.grade)).join('')}</select>
+      <select data-filter="cond" aria-label="状態">${opt('', '状態', f.cond)}${COND_RATINGS.map(([k, l]) => opt(k, `評価 ${l}`, f.cond)).join('')}
+        ${opt('unrated', '未評価', f.cond)}${opt('issues', '欠陥ありすべて', f.cond)}${opt('crease', '折れ・へこみあり', f.cond)}${opt('center-ng', 'センタリング基準外', f.cond)}</select>
       ${tags.length ? `<select data-filter="tag" aria-label="タグ">${opt('', 'タグ', f.tag)}${tags.map((t) => opt(t, `#${t}`, f.tag)).join('')}</select>` : ''}
       <select data-filter="sort" aria-label="並び替え">
-        ${[['added-desc', '登録が新しい順'], ['purchase-desc', '購入日が新しい順'], ['value-desc', '評価額が高い順'], ['value-asc', '評価額が低い順'],
-          ['profit-desc', '損益が大きい順'], ['name', '名前順'], ['number', 'セット・番号順']].map(([v, l]) => opt(v, l, f.sort)).join('')}
+        ${[['added-desc', '登録が新しい順'], ['purchase-desc', '購入日が新しい順'], ['price-desc', '購入価格が高い順'], ['price-asc', '購入価格が低い順'],
+          ['cond', '状態が良い順'], ['name', '名前順'], ['number', 'セット・番号順']].map(([v, l]) => opt(v, l, f.sort)).join('')}
       </select>
       <div class="seg" role="group" aria-label="表示切替">
         <button class="${f.layout === 'grid' ? 'on' : ''}" data-action="layout" data-layout="grid">グリッド</button>
@@ -795,9 +885,7 @@ function renderResults() {
   const el = $('#results');
   if (!el) return;
   const list = filteredCards();
-  const value = sum(list, cardValue);
-  const pl = value - sum(list, cardCost);
-  const summary = `<p class="muted small">${list.length}種類 / ${sum(list, qty)}枚 ・ 評価額 ${yen(value)}（<span class="${pl >= 0 ? 'up' : 'down'}">${signedYen(pl)}</span>）</p>`;
+  const summary = `<p class="muted small">${list.length}種類 / ${sum(list, qty)}枚 ・ 購入額 ${yen(sum(list, cardCost))}</p>`;
   if (!list.length) {
     el.innerHTML = live('owned').length
       ? emptyState('条件に一致するカードがありません。', '<button class="btn" data-action="clear-filters">絞り込みを解除</button>')
@@ -806,17 +894,18 @@ function renderResults() {
   }
   if (state.filters.layout === 'list') {
     el.innerHTML = summary + `<div class="table-wrap"><table class="table">
-      <thead><tr><th></th><th>カード</th><th>セット / 番号</th><th>鑑定</th><th class="r">枚数</th><th class="r">取得</th><th class="r">評価額</th><th class="r">損益</th></tr></thead>
+      <thead><tr><th></th><th>カード</th><th>セット / 番号</th><th>鑑定</th><th>状態</th><th>欠陥</th><th class="r">枚数</th><th class="r">購入価格</th></tr></thead>
       <tbody>${list.map((c) => {
         const img = c.imageData || c.imageUrl;
-        const pl2 = cardValue(c) - cardCost(c);
+        const cond = condOf(c);
         return `<tr data-action="open-card" data-id="${c.id}" tabindex="0">
           <td><span class="thumb">${img ? `<img src="${esc(img)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}</span></td>
           <td><strong>${esc(title(c))}</strong><br><span class="muted small">${esc(c.rarity)}</span></td>
           <td class="small">${esc([c.setCode, c.setName].filter(Boolean).join(' '))}<br>${esc(c.number)}</td>
           <td>${esc(c.grade !== '未鑑定' ? c.grade : '')}</td>
-          <td class="r">${qty(c)}</td><td class="r">${yen(cardCost(c))}</td><td class="r">${yen(cardValue(c))}</td>
-          <td class="r ${pl2 >= 0 ? 'up' : 'down'}">${signedYen(pl2)}</td></tr>`;
+          <td>${cond.overall ? `<span class="badge rating r-${esc(cond.overall)}">${esc(cond.overall)}</span>` : '<span class="muted small">未評価</span>'}</td>
+          <td class="small">${esc(activeDefects(cond).map(([k, l]) => `${l}(${SEVERITY_LABEL[cond.defects[k]]})`).join('、'))}</td>
+          <td class="r">${qty(c)}</td><td class="r">${yen(c.purchasePrice || null)}</td></tr>`;
       }).join('')}</tbody></table></div>`;
   } else {
     el.innerHTML = summary + `<div class="grid">${list.map(tileHtml).join('')}</div>`;
@@ -854,7 +943,7 @@ function setStats() {
     const distinct = new Set(nums.map((n) => n.n));
     const base = total ? [...distinct].filter((n) => n <= total).length : distinct.size;
     const secret = total ? [...distinct].filter((n) => n > total).length : 0;
-    return { ...g, total, base, secret, value: sum(g.cards, cardValue), qty: sum(g.cards, qty) };
+    return { ...g, total, base, secret, value: sum(g.cards, cardCost), qty: sum(g.cards, qty) };
   }).sort((a, b) => String(b.master?.releaseDate || '').localeCompare(String(a.master?.releaseDate || '')) || b.value - a.value);
 }
 
@@ -889,21 +978,18 @@ function viewWish() {
       <button class="btn primary" data-action="new-card" data-status="wish">＋ ほしいものを追加</button>
     </div>
     ${list.length ? `<div class="wish-list">${list.map((c) => {
-      const cur = latestPrice(c);
       const target = num(c.targetPrice);
-      const hit = cur !== null && target > 0 && cur <= target;
       const img = c.imageData || c.imageUrl;
-      return `<div class="wish-row${hit ? ' hit' : ''}">
+      return `<div class="wish-row">
         <button class="wish-main" data-action="open-card" data-id="${c.id}">
           <span class="thumb">${img ? `<img src="${esc(img)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}</span>
           <span class="wish-info"><strong>${esc(title(c))}</strong>
             <span class="muted small">${esc([c.rarity, c.setCode, c.number, c.grade !== '未鑑定' ? c.grade : ''].filter(Boolean).join(' · '))}</span></span>
-          <span class="wish-prices"><span class="small muted">目標</span> ${yen(target || null)}<br>
-            <span class="small muted">相場</span> ${cur !== null ? yen(cur) : '-'} ${hit ? '<span class="badge ok">目標以下</span>' : ''}</span>
+          <span class="wish-prices"><span class="small muted">目標</span> ${yen(target || null)}</span>
         </button>
         <button class="btn small" data-action="got-wish" data-id="${c.id}">入手した</button>
       </div>`;
-    }).join('')}</div>` : emptyState('ほしいカードを登録して、目標価格と相場を見比べられます。')}`;
+    }).join('')}</div>` : emptyState('ほしいカードを目標価格と一緒に登録できます。')}`;
 }
 
 // ---------- 取り込み ----------
@@ -1052,6 +1138,8 @@ function openCard(id, preset = {}) {
   const base = id ? state.cards.find((c) => c.id === id) : newCard(preset);
   if (!base) return;
   state.editing = structuredClone(base);
+  state.editing.cond = condOf(state.editing);
+  cardForm().innerHTML = '';
   renderCardForm();
   cardDlg().showModal();
 }
@@ -1060,9 +1148,8 @@ function renderCardForm() {
   const c = state.editing;
   const isNew = !state.cards.some((x) => x.id === c.id && !x.deleted);
   const img = c.imageData || c.imageUrl;
-  const prices = [...(c.prices || [])].map((p, i) => ({ ...p, i })).sort((a, b) => b.date.localeCompare(a.date));
-  const cur = latestPrice(c);
-  const pl = cur !== null && num(c.purchasePrice) ? (cur - num(c.purchasePrice)) * qty(c) : null;
+  // 再描画してもスクロール位置を保つ
+  const scroll = $('.dlg-body', cardForm())?.scrollTop || 0;
   cardForm().innerHTML = `
     <header class="dlg-head">
       <h2>${isNew ? (c.status === 'wish' ? 'ほしいものを追加' : 'カードを追加') : esc(title(c))}</h2>
@@ -1085,7 +1172,6 @@ function renderCardForm() {
           ${fld('セットコード', 'setCode', c.setCode, 'text', 'placeholder="S4a"')}
           ${fld('セット名', 'setName', c.setName, 'text', 'placeholder="シャイニースターV"')}
           ${fld('鑑定', 'grade', c.grade, 'text', 'list="dl-grade"')}
-          ${fld('状態メモ', 'condition', c.condition, 'text', 'list="dl-cond"')}
           ${fld('枚数', 'quantity', c.quantity, 'number', 'min="1" step="1"')}
           ${c.status === 'wish' ? fld('目標価格（円）', 'targetPrice', c.targetPrice, 'number', 'min="0"') : fld('購入価格（円・1枚）', 'purchasePrice', c.purchasePrice, 'number', 'min="0"')}
           ${c.status === 'wish' ? '' : fld('購入日', 'purchaseDate', c.purchaseDate, 'date')}
@@ -1097,25 +1183,7 @@ function renderCardForm() {
       ${c.rawTitle ? `<p class="muted small">元の商品名: ${esc(c.rawTitle)}</p>` : ''}
       <label class="fld"><span>メモ</span><textarea name="memo" rows="2">${esc(c.memo)}</textarea></label>
 
-      <section class="sub">
-        <div class="panel-head"><h3>相場の記録</h3>
-          <span class="small">${cur !== null ? `最新 ${yen(cur)}` : '未記録'}${pl !== null ? ` ・ 損益 <span class="${pl >= 0 ? 'up' : 'down'}">${signedYen(pl)}</span>` : ''}</span></div>
-        <div id="card-chart"></div>
-        <div class="price-add">
-          <input type="date" id="np-date" value="${today()}" aria-label="日付">
-          <input type="number" id="np-price" min="0" placeholder="価格（円）" aria-label="価格">
-          <input id="np-note" class="grow" placeholder="メモ（例: スニダン最安値）" aria-label="メモ">
-          <button type="button" class="btn small" data-action="add-price">記録</button>
-        </div>
-        ${prices.length ? `<ul class="price-list">${prices.map((p) => `<li><span>${esc(p.date)}</span><strong>${yen(p.price)}</strong>
-          <span class="muted small grow">${esc(p.note || '')}</span>
-          <button type="button" class="icon-btn" data-action="del-price" data-idx="${p.i}" aria-label="削除">×</button></li>`).join('')}</ul>` : ''}
-      </section>
-
-      <section class="sub">
-        <div class="panel-head"><h3>10年後予測</h3><button type="button" class="btn small ghost" data-action="ai-forecast">✨ AIで予想</button></div>
-        <input name="forecast10y" value="${esc(c.forecast10y)}" placeholder="例: ¥50,000前後" aria-label="10年後予測">
-      </section>
+      ${c.status === 'wish' ? '' : condSectionHtml(c)}
     </div>
     <footer class="dlg-foot">
       ${isNew ? '' : '<button type="button" class="btn danger ghost" data-action="delete-card">削除</button>'}
@@ -1123,15 +1191,78 @@ function renderCardForm() {
       <button type="button" class="btn ghost" data-action="close-card">キャンセル</button>
       <button type="submit" class="btn primary">保存</button>
     </footer>`;
-  const chartEl = $('#card-chart');
-  const pts = (c.prices || []).filter((p) => p.date).map((p) => ({ x: new Date(p.date).getTime(), y: num(p.price) }));
-  if (pts.length) {
-    const series = [{ name: '相場', color: 'var(--accent)', points: pts }];
-    if (num(c.purchasePrice) && c.purchaseDate) series.push({ name: '購入価格', color: 'var(--line2)', points: [{ x: new Date(c.purchaseDate).getTime(), y: num(c.purchasePrice) }] });
-    lineChart(chartEl, series, { height: 160 });
-  } else {
-    chartEl.innerHTML = '';
-  }
+  const body = $('.dlg-body', cardForm());
+  if (body) body.scrollTop = scroll;
+}
+
+// 状態チェック欄
+function condSectionHtml(c) {
+  const cond = c.cond;
+  const chip = (name, value, label, cur, cls = '') => `<label class="chip ${cls}"><input type="radio" name="${name}" value="${value}" ${value === cur ? 'checked' : ''}><span>${label}</span></label>`;
+  const centInputs = (side, label) => {
+    const v = cond.centering[side];
+    const inp = (k, ph) => `<input class="c-${k}" type="number" inputmode="decimal" min="0" step="0.05" name="cond.centering.${side}.${k}" value="${esc(v[k])}" placeholder="${ph}" aria-label="${label} ${ph}の枠幅" data-cent="${side}">`;
+    return `<div class="cent-side">
+      <div class="cent-box">${inp('t', '上')}${inp('l', '左')}<div class="c-card">${label}</div>${inp('r', '右')}${inp('b', '下')}</div>
+      <div class="cent-result" id="cent-${side}">${centResultHtml(side, v)}</div></div>`;
+  };
+  return `
+      <section class="sub cond">
+        <div class="panel-head"><h3>状態チェック</h3>
+          <div class="row" style="margin:0">
+            <label class="fld inline" style="margin:0"><span>点検日</span><input type="date" name="cond.inspectedAt" value="${esc(cond.inspectedAt)}"></label>
+            <button type="button" class="btn small ghost" data-action="cond-today">今日</button>
+          </div></div>
+
+        <h4>総合評価</h4>
+        <div class="chips">${chip('cond.overall', '', '未評価', cond.overall)}${COND_RATINGS.map(([k, l]) => chip('cond.overall', k, l, cond.overall, `r-${k}`)).join('')}</div>
+        ${fld('ひとこと', 'condition', c.condition, 'text', 'list="dl-cond" placeholder="例: 美品・スリーブ保管"')}
+
+        <h4>センタリング</h4>
+        <p class="muted small">表・裏それぞれ、上下左右の枠（ボーダー）の幅を入力すると比率を計算します。単位は mm でも定規の目盛りでも構いません。PSA10 の目安は 表 55:45・裏 75:25 以内です。</p>
+        <div class="cent-grid">${centInputs('front', '表')}${centInputs('back', '裏')}</div>
+
+        <h4>欠陥</h4>
+        <div class="defects">${DEFECTS.map(([k, l]) => `<div class="defect-row"><span class="defect-name">${l}</span>
+          <div class="chips sev">${SEVERITY.map(([v, vl]) => chip(`cond.defects.${k}`, v, vl, cond.defects[k], `sev-${v}`)).join('')}</div></div>`).join('')}</div>
+
+        <h4>白かけの位置</h4>
+        <p class="muted small">角・辺をタップして白かけのある位置を記録します。</p>
+        <div class="wh-grid">${['front', 'back'].map((side) => whDiagram(side, cond.whiteMarks[side])).join('')}</div>
+
+        <label class="fld"><span>状態の詳細メモ</span><textarea name="cond.note" rows="2" placeholder="例: 裏面右上に0.5mmほどの白かけ。ホロに薄い縦線。">${esc(cond.note)}</textarea></label>
+
+        <h4>状態の写真</h4>
+        <div class="cond-photos">
+          ${cond.photos.map((ph, i) => `<div class="cphoto"><button type="button" class="cphoto-img" data-action="view-photo" data-idx="${i}" aria-label="写真${i + 1}を拡大"><img src="${esc(ph)}" alt=""></button>
+            <button type="button" class="icon-btn del" data-action="del-photo" data-idx="${i}" aria-label="写真${i + 1}を削除">×</button></div>`).join('')}
+          ${cond.photos.length < 8 ? '<label class="cphoto add">＋ 写真を追加<input type="file" accept="image/*" multiple data-change="add-photos" hidden></label>' : ''}
+        </div>
+      </section>`;
+}
+
+function centResultHtml(side, v) {
+  const r = centeringOf(v, side);
+  if (!r) return '<span class="muted small">未計測</span>';
+  return `<span class="small">${esc(centeringText(r))}</span>
+    <span class="badge ${r.ok ? 'ok' : 'warn'}">${r.ok ? 'PSA10目安内' : '目安外'}</span>`;
+}
+
+// 白かけ位置の図（角・辺をタップで切り替え）
+function whDiagram(side, marks) {
+  const on = (p) => (marks.includes(p) ? ' on' : '');
+  const g = (p, shape) => `<g class="wh-pos${on(p)}" data-action="toggle-wh" data-side="${side}" data-pos="${p}" role="button" tabindex="0" aria-pressed="${marks.includes(p)}" aria-label="${side === 'front' ? '表' : '裏'} ${WH_LABEL[p]}"><title>${WH_LABEL[p]}</title>${shape}</g>`;
+  const corner = (p, x, y) => g(p, `<circle cx="${x}" cy="${y}" r="10"/>`);
+  return `<figure class="wh">
+    <svg viewBox="-3 -3 106 142">
+      <rect x="10" y="10" width="80" height="116" rx="6" class="wh-card"/>
+      <text x="50" y="72" text-anchor="middle" class="wh-label">${side === 'front' ? '表' : '裏'}</text>
+      ${corner('tl', 10, 10)}${corner('tr', 90, 10)}${corner('br', 90, 126)}${corner('bl', 10, 126)}
+      ${g('t', '<rect x="30" y="4" width="40" height="12" rx="4"/>')}${g('b', '<rect x="30" y="120" width="40" height="12" rx="4"/>')}
+      ${g('l', '<rect x="4" y="48" width="12" height="40" rx="4"/>')}${g('r', '<rect x="84" y="48" width="12" height="40" rx="4"/>')}
+    </svg>
+    <figcaption class="small">${marks.length ? esc(marks.map((p) => WH_LABEL[p]).join('・')) : '<span class="muted">なし</span>'}</figcaption>
+  </figure>`;
 }
 
 // フォームの入力値を編集中データに反映（再描画前に呼ぶ）
@@ -1139,7 +1270,13 @@ function syncForm() {
   const fd = new FormData(cardForm());
   const c = state.editing;
   for (const [k, v] of fd.entries()) {
-    if (k === 'tags') c.tags = splitList(v);
+    if (k.startsWith('cond.')) {
+      // 例: cond.centering.front.l → c.cond.centering.front.l
+      const path = k.split('.').slice(1);
+      let o = c.cond;
+      path.slice(0, -1).forEach((p) => { o = o[p]; });
+      o[path[path.length - 1]] = String(v).trim();
+    } else if (k === 'tags') c.tags = splitList(v);
     else if (k === 'quantity') c.quantity = Math.max(1, Math.floor(num(v)) || 1);
     else if (k === 'purchasePrice' || k === 'targetPrice') c[k] = v === '' ? '' : num(v);
     else c[k] = typeof v === 'string' ? v.trim() : v;
@@ -1227,24 +1364,27 @@ const actions = {
   'close-card': () => cardDlg().close(),
   'clear-image': () => { syncForm(); state.editing.imageData = ''; state.editing.imageUrl = ''; renderCardForm(); },
   'ai-identify': (el) => aiIdentifyEditing(el),
-  'ai-forecast': async (el) => {
+  'cond-today': () => { syncForm(); state.editing.cond.inspectedAt = today(); renderCardForm(); },
+  'toggle-wh': (el) => {
     syncForm();
-    const s = state.settings;
-    el.disabled = true; el.textContent = '予想中…';
-    try {
-      state.editing.forecast10y = await AI.forecast10y({ apiKey: s.geminiKey, model: s.geminiModel, gameName: s.gameName, card: state.editing, currentPrice: latestPrice(state.editing) });
-      renderCardForm();
-    } finally { el.disabled = false; el.textContent = '✨ AIで予想'; }
-  },
-  'add-price': () => {
-    const date = $('#np-date').value;
-    const price = $('#np-price').value;
-    if (!date || price === '') { toast('日付と価格を入力してください', 'error'); return; }
-    syncForm();
-    state.editing.prices = [...(state.editing.prices || []), { date, price: num(price), note: $('#np-note').value.trim() }];
+    const marks = state.editing.cond.whiteMarks[el.dataset.side];
+    const i = marks.indexOf(el.dataset.pos);
+    if (i >= 0) marks.splice(i, 1); else marks.push(el.dataset.pos);
+    // 白かけ位置を付けたのに程度が「なし」なら「軽微」にする
+    if (marks.length && state.editing.cond.defects.whitening === 'none') state.editing.cond.defects.whitening = 'light';
     renderCardForm();
   },
-  'del-price': (el) => { syncForm(); state.editing.prices.splice(Number(el.dataset.idx), 1); renderCardForm(); },
+  'del-photo': (el) => {
+    if (!confirm('この写真を削除しますか？')) return;
+    syncForm();
+    state.editing.cond.photos.splice(Number(el.dataset.idx), 1);
+    renderCardForm();
+  },
+  'view-photo': (el) => {
+    $('#photo-view').src = state.editing.cond.photos[Number(el.dataset.idx)];
+    $('#photo-dialog').showModal();
+  },
+  'close-photo': () => $('#photo-dialog').close(),
   'delete-card': async () => {
     if (!confirm(`「${title(state.editing)}」を削除しますか？`)) return;
     await deleteCard(state.editing.id);
@@ -1255,15 +1395,16 @@ const actions = {
     const c = structuredClone(state.cards.find((x) => x.id === el.dataset.id));
     c.status = 'owned';
     c.purchaseDate = today();
-    c.purchasePrice = latestPrice(c) ?? (c.targetPrice || '');
+    c.purchasePrice = c.targetPrice || '';
     state.editing = c;
     renderCardForm();
     cardDlg().showModal();
     toast('購入価格と購入日を確認して保存してください');
   },
   layout: (el) => { state.filters.layout = el.dataset.layout; render(); },
-  'clear-filters': () => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '' }); render(); },
-  'filter-set': (el) => { Object.assign(state.filters, { q: '', set: el.dataset.key, rarity: '', grade: '', tag: '', sort: 'number' }); state.view = 'collection'; render(); },
+  'clear-filters': () => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: '' }); render(); },
+  'filter-set': (el) => { Object.assign(state.filters, { q: '', set: el.dataset.key, rarity: '', grade: '', tag: '', cond: '', sort: 'number' }); state.view = 'collection'; render(); },
+  'filter-cond': (el) => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: el.dataset.cond }); state.view = 'collection'; render(); },
   'new-set': () => openSet(null),
   'edit-set': (el) => openSet(el.dataset.key),
   'close-set': () => $('#set-dialog').close(),
@@ -1308,6 +1449,15 @@ const changeActions = {
     state.editing.imageData = await resizeImage(file);
     renderCardForm();
   },
+  'add-photos': async (el) => {
+    const files = [...(el.files || [])];
+    if (!files.length) return;
+    syncForm();
+    const room = 8 - state.editing.cond.photos.length;
+    for (const f of files.slice(0, room)) state.editing.cond.photos.push(await resizeImage(f, 1200));
+    if (files.length > room) toast('状態の写真は1枚のカードにつき8枚までです', 'error');
+    renderCardForm();
+  },
   'import-csv': async (el) => { const f = el.files?.[0]; el.value = ''; if (f) await importCsv(f); },
   'import-json': async (el) => {
     const f = el.files?.[0];
@@ -1338,13 +1488,14 @@ document.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   // テーブル行のキーボード操作
   if (e.key === 'Enter' && e.target.matches('tr[data-action]')) e.target.click();
-  // 相場入力欄の Enter はフォーム送信ではなく「記録」
-  if (e.key === 'Enter' && e.target.closest('.price-add')) { e.preventDefault(); guard(actions['add-price'])(); }
+  // SVG の白かけ位置はキーボードでも切り替え可能に
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('g[data-action]')) { e.preventDefault(); guard(actions['toggle-wh'])(e.target); }
 });
 
 document.addEventListener('change', (e) => {
   const el = e.target;
   if (el.dataset.change && changeActions[el.dataset.change]) { guard(changeActions[el.dataset.change])(el); return; }
+  if (el.name === 'status' && el.closest('#card-form')) { syncForm(); renderCardForm(); return; }
   if (el.dataset.setting) {
     const k = el.dataset.setting;
     state.settings[k] = el.type === 'checkbox' ? el.checked : el.type === 'number' ? num(el.value) : el.value.trim();
@@ -1367,6 +1518,12 @@ document.addEventListener('change', (e) => {
 
 document.addEventListener('input', (e) => {
   const el = e.target;
+  if (el.dataset.cent) {
+    const side = el.dataset.cent;
+    const v = Object.fromEntries(['l', 'r', 't', 'b'].map((k) => [k, $(`[name="cond.centering.${side}.${k}"]`).value]));
+    $(`#cent-${side}`).innerHTML = centResultHtml(side, v);
+    return;
+  }
   if (el.dataset.filter === 'q') { state.filters.q = el.value; renderResults(); }
   if (el.dataset.filter === 'wishQ') {
     state.wishQ = el.value;

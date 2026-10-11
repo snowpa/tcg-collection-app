@@ -76,19 +76,6 @@ ${imageBase64
   };
 }
 
-// スプレッドシートの「10年後予測」列に相当する参考予想
-export async function forecast10y({ apiKey, model, gameName, card, currentPrice }) {
-  const prompt = `
-あなたは${gameName}の市場動向に詳しいアナリストです。以下のカードの10年後の参考価格を予想してください。
-カード: ${card.name} ${card.rarity || ''} ${card.setCode || ''} ${card.setName || ''} ${card.number || ''}
-鑑定: ${card.grade || '未鑑定'}
-購入日: ${card.purchaseDate || '不明'} / 購入価格: ${card.purchasePrice || '不明'}円 / 現在の参考価格: ${currentPrice || '不明'}円
-
-出力: 「¥xx,xxx前後（理由を40字以内）」の形式で1行のみ。前置きや注意書きは不要です。
-`.trim();
-  return generate(apiKey, model, [{ text: prompt }], { temperature: 0.4 });
-}
-
 // 画像URL → base64（CORS が許可されていない画像は失敗するので呼び出し側でフォールバックする）
 export async function urlToBase64(url) {
   const res = await fetch(url, { mode: 'cors', referrerPolicy: 'no-referrer' });

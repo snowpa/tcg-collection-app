@@ -227,7 +227,6 @@ img.broken { display: none; }
 /* ===== ほしいもの ===== */
 .wish-list { display: flex; flex-direction: column; gap: 8px; }
 .wish-row { display: flex; gap: 8px; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; }
-.wish-row.hit { border-color: var(--up); }
 .wish-main { flex: 1; min-width: 0; display: flex; gap: 12px; align-items: center; background: none; border: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; padding: 0; }
 .wish-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .wish-prices { text-align: right; font-variant-numeric: tabular-nums; font-size: .88rem; }
@@ -269,11 +268,6 @@ img.broken { display: none; }
 .edit-img { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 .img-box { position: relative; aspect-ratio: 63 / 88; border-radius: 10px; overflow: hidden; background: linear-gradient(145deg, var(--surface2), var(--border)); max-width: 220px; width: 100%; margin: 0 auto; }
 .sub { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 10px; }
-.price-add { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-.price-add input[type="date"] { width: 150px; }
-.price-add input[type="number"] { width: 130px; }
-.price-list { list-style: none; margin: 0; padding: 0; }
-.price-list li { display: flex; gap: 12px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
 
 /* ===== トースト ===== */
 .toasts { position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 100; display: flex; flex-direction: column; gap: 6px; width: min(92vw, 460px); pointer-events: none; }
@@ -292,3 +286,68 @@ img.broken { display: none; }
   .toolbar .seg button { flex: 1; }
   .toolbar > .btn.primary { flex: 1 1 calc(50% - 8px); }
 }
+
+/* ===== 状態チェック ===== */
+.warn-text { color: var(--warn); font-size: .75rem; }
+.badge.rating { bottom: 6px; left: 6px; min-width: 22px; text-align: center; color: #fff; }
+.tile-img .badge.rating { position: absolute; }
+.r-S { --rc: #0f8a4a; } .r-A { --rc: #1f6feb; } .r-B { --rc: #8a6d00; } .r-C { --rc: #c4620c; } .r-D { --rc: #c62f3b; }
+.badge.rating.r-S, .badge.rating.r-A, .badge.rating.r-B, .badge.rating.r-C, .badge.rating.r-D { background: var(--rc); }
+
+.sub.cond h4 { font-size: .85rem; margin: 14px 0 6px; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { position: relative; cursor: pointer; }
+.chip input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.chip span { display: inline-block; padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px; font-size: .82rem; background: var(--surface); }
+.chip input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chip input:checked + span { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.chip[class*="r-"] input:checked + span { background: var(--rc); border-color: var(--rc); color: #fff; }
+.chip.sev-light input:checked + span { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
+.chip.sev-moderate input:checked + span { background: color-mix(in srgb, var(--down) 15%, var(--surface)); border-color: var(--down); color: var(--down); }
+.chip.sev-heavy input:checked + span { background: var(--down); border-color: var(--down); color: #fff; }
+
+.cent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.cent-side { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.cent-box { display: grid; grid-template-columns: 64px 84px 64px; grid-template-rows: auto 110px auto; grid-template-areas: ". t ." "l card r" ". b ."; gap: 4px; align-items: center; justify-items: center; }
+.cent-box input { width: 64px; text-align: center; padding: 6px 4px; }
+.cent-box .c-t { grid-area: t; } .cent-box .c-b { grid-area: b; } .cent-box .c-l { grid-area: l; } .cent-box .c-r { grid-area: r; }
+.c-card { grid-area: card; width: 78px; height: 108px; border: 2px solid var(--line2); border-radius: 6px; display: grid; place-items: center; font-weight: 700; color: var(--muted); background: var(--surface2); }
+.cent-result { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: center; min-height: 24px; font-variant-numeric: tabular-nums; }
+
+.defects { display: flex; flex-direction: column; gap: 6px; }
+.defect-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.defect-name { width: 120px; font-size: .88rem; }
+
+.wh-grid { display: flex; gap: 24px; flex-wrap: wrap; }
+.wh { margin: 0; text-align: center; width: 130px; }
+.wh svg { width: 130px; height: auto; display: block; }
+.wh-card { fill: var(--surface2); stroke: var(--line2); stroke-width: 1.5; }
+.wh-label { fill: var(--muted); font-size: 14px; font-weight: 700; }
+.wh-pos { cursor: pointer; }
+.wh-pos > :not(title) { fill: var(--surface); stroke: var(--line2); stroke-width: 1.5; stroke-dasharray: 3 2; }
+.wh-pos:hover > :not(title) { stroke: var(--accent); }
+.wh-pos:focus { outline: none; }
+.wh-pos:focus-visible > :not(title) { stroke: var(--accent); stroke-width: 3; }
+.wh-pos.on > :not(title) { fill: var(--down); stroke: var(--down); stroke-dasharray: none; }
+
+.cond-photos { display: flex; flex-wrap: wrap; gap: 8px; }
+.cphoto { position: relative; width: 88px; height: 88px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
+.cphoto-img { padding: 0; border: 0; width: 100%; height: 100%; cursor: zoom-in; background: var(--surface2); }
+.cphoto-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cphoto .del { position: absolute; top: 2px; right: 2px; width: 24px; height: 24px; font-size: 1rem; background: rgba(0, 0, 0, .6); color: #fff; border-radius: 50%; line-height: 1; }
+.cphoto.add { display: grid; place-items: center; text-align: center; font-size: .78rem; color: var(--muted); border-style: dashed; cursor: pointer; padding: 6px; }
+.cphoto.add:hover { border-color: var(--accent); color: var(--accent); }
+.dlg.photo { width: auto; max-width: calc(100vw - 24px); background: #000; position: relative; }
+.dlg.photo img { display: block; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); object-fit: contain; }
+.photo-close { position: absolute; top: 6px; right: 6px; background: rgba(0, 0, 0, .6); color: #fff; border-radius: 50%; }
+
+/* ホームの状態内訳 */
+.dist { list-style: none; margin: 0; padding: 0; }
+.dist-row { display: grid; grid-template-columns: 170px 1fr 36px; gap: 10px; align-items: center; width: 100%; padding: 6px 2px; background: none; border: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; }
+.dist-row:hover { background: var(--surface2); border-radius: 6px; }
+.dist-label { display: flex; gap: 6px; align-items: center; font-size: .86rem; }
+.dist-label .badge { position: static; }
+.dist-n { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.rank.plain .rank-row::before { content: none; }
+@media (max-width: 560px) { .dist-row { grid-template-columns: 120px 1fr 30px; } .defect-name { width: 100%; } }
+@media (max-width: 639px) { .img-box { max-width: 160px; } }

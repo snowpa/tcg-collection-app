@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>トレカ・コレクション</title>
-  <meta name="description" content="トレーディングカードの所持・相場・コンプ率を管理するWebアプリ">
+  <meta name="description" content="トレーディングカードの所持・状態・コンプ率を管理するWebアプリ">
   <meta name="theme-color" content="#1f6feb">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -23,6 +23,7 @@
 
   <dialog id="card-dialog" class="dlg"><form id="card-form" method="dialog" novalidate></form></dialog>
   <dialog id="set-dialog" class="dlg small"><form id="set-form" method="dialog"></form></dialog>
+  <dialog id="photo-dialog" class="dlg photo"><button type="button" class="icon-btn photo-close" data-action="close-photo" aria-label="閉じる">×</button><img id="photo-view" alt="状態の写真"></dialog>
   <div id="datalists"></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
 

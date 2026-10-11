@@ -1,7 +1,7 @@
 {
   "name": "トレカ・コレクション",
   "short_name": "トレカ",
-  "description": "トレーディングカードの所持・相場・コンプ率を管理",
+  "description": "トレーディングカードの所持・状態・コンプ率を管理",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
