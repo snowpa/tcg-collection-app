@@ -85,7 +85,6 @@ const DEFAULT_SETTINGS = {
   clientId: '',
   geminiKey: '',
   geminiModel: 'gemini-2.5-flash',
-  cardrushProxy: '',
   gameName: 'ポケモンカード',
   autoAi: false,
   keywordFilter: true,
@@ -791,6 +790,7 @@ function render() {
   }
   if (state.view === 'collection') renderResults({ keep: true });
   if (state.view === 'sets') renderSetList();
+  if (state.view === 'settings') updateCrStatus();
   if (state.view === 'import') renderScanResults();
   updateSyncButton();
 }
@@ -1411,10 +1411,19 @@ function viewSettings() {
 
     <section class="panel">
       <h2>カードラッシュ連携</h2>
-      <p class="muted small">カードの正式名・レアリティ・番号・型番と画像を<a href="https://www.cardrush-pokemon.jp/" target="_blank" rel="noopener">カードラッシュ</a>から取得します。カードラッシュはブラウザから直接読み込めないため、Google Apps Script の中継ウェブアプリを使います（作り方は README の「カードラッシュ連携」）。</p>
-      <label class="fld"><span>カードラッシュ連携URL（GAS ウェブアプリの URL）</span>
-        <input data-setting="cardrushProxy" value="${esc(s.cardrushProxy)}" placeholder="https://script.google.com/macros/s/xxxxxxxx/exec" autocomplete="off"></label>
-      <button class="btn small" data-action="cr-test" ${s.cardrushProxy ? '' : 'disabled'}>接続テスト</button>
+      <p class="muted small">カードの正式名・レアリティ・番号・型番と画像を<a href="https://www.cardrush-pokemon.jp/" target="_blank" rel="noopener">カードラッシュ</a>から取得します。カードラッシュは外部のサイトやサーバーから読み込めないため、PC版 Chrome に専用の拡張機能を入れて、そのブラウザで取得します（スマホでは使えません）。</p>
+      <p id="cr-status" class="small" aria-live="polite">拡張機能を確認中…</p>
+      <details class="small"><summary>拡張機能の入れ方</summary>
+        <ol>
+          <li><a href="https://github.com/snowpa/tcg-collection-app/archive/refs/heads/main.zip">リポジトリの ZIP</a> をダウンロードして展開する</li>
+          <li>Chrome で <code>chrome://extensions</code> を開き、右上の「デベロッパー モード」をオンにする</li>
+          <li>「パッケージ化されていない拡張機能を読み込む」で、展開したフォルダ内の <code>chrome-extension</code> フォルダを選ぶ</li>
+          <li>このページを再読み込みして「接続テスト」</li>
+        </ol></details>
+      <div class="row">
+        <button class="btn small" data-action="cr-test">接続テスト</button>
+        <button class="btn small ghost" data-action="cr-open-site">カードラッシュを開く</button>
+      </div>
     </section>
 
     <section class="panel">
@@ -1539,7 +1548,7 @@ async function applyCardrush(c, item) {
   c.cardrushUrl = item.url;
   c.imageUrl = item.image;
   try {
-    c.imageData = await resizeImage(await CR.imageDataUrl(state.settings.cardrushProxy, item.image), 800);
+    c.imageData = await resizeImage(await CR.imageDataUrl(item.image), 800);
     c.thumb = await makeThumb(c.imageData);
   } catch (e) {
     // 画像だけ取れない場合は直リンク表示にする
@@ -1549,12 +1558,20 @@ async function applyCardrush(c, item) {
   }
 }
 
+// 設定画面の拡張機能の状態表示
+async function updateCrStatus() {
+  const el = $('#cr-status');
+  if (!el) return;
+  try {
+    const v = await CR.ping();
+    el.innerHTML = `<span class="badge ok">接続済み</span> 拡張機能 v${esc(v)}`;
+  } catch {
+    el.innerHTML = '<span class="badge warn">未接続</span> 拡張機能が見つかりません。下の手順で PC版 Chrome に読み込んでください。';
+  }
+}
+
 // queries: 自動で順に試す検索語（見つかった時点で止める）
 function openCrPicker({ queries = [], number = '', heading = 'カードラッシュから選ぶ', onPick }) {
-  if (!state.settings.cardrushProxy) {
-    toast('設定画面で「カードラッシュ連携URL」を入力してください', 'error');
-    return;
-  }
   state.cr = { q: queries[0] || '', number, heading, onPick, items: [], total: 0, page: 0, loading: false, error: '', note: '' };
   renderCrPicker();
   if (!$('#cr-dialog').open) $('#cr-dialog').showModal();
@@ -1574,7 +1591,7 @@ async function crSearch(page, fallbacks = null) {
     let r = { items: [], total: 0 };
     for (const q of tries) {
       cr.q = q;
-      r = await CR.search(state.settings.cardrushProxy, q, page);
+      r = await CR.search(q, page);
       if (state.cr !== cr) return; // 途中で閉じた・検索し直した
       if (r.items.length) break;
     }
@@ -1610,7 +1627,7 @@ function renderCrPicker() {
       </form>
       ${cr.note ? `<p class="small">${esc(cr.note)}</p>` : ''}
       ${want ? `<p class="muted small">番号「${esc(want)}」に一致する商品を先頭に表示しています。</p>` : ''}
-      ${cr.error ? `<div class="notice">${esc(cr.error)}</div>` : ''}
+      ${cr.error ? `<div class="notice">${esc(cr.error)}${/ボット確認/.test(cr.error) ? ' <button type="button" class="btn small" data-action="cr-open-site">カードラッシュを開く</button>' : ''}</div>` : ''}
       ${cr.items.length ? `<p class="muted small">${cr.total}件中 ${cr.items.length}件を表示</p>
         <div class="cr-grid">${scored.map(({ item, i, p, hit, used, sold }) => `
           <button type="button" class="cr-item${hit ? ' hit' : ''}" data-action="cr-pick" data-idx="${i}">
@@ -1925,17 +1942,20 @@ const actions = {
     // 選択したカードを一覧の並び順で1枚ずつ照合
     const ids = state.resultIds.filter((id) => state.selected.has(id));
     if (!ids.length) return;
-    if (!state.settings.cardrushProxy) { toast('設定画面で「カードラッシュ連携URL」を入力してください', 'error'); return; }
+    await CR.ping(); // 拡張機能がなければここでエラー表示
     state.crWalk = true;
     await openCard(ids[0], {}, ids);
   },
   'cr-test': async (el) => {
     el.disabled = true;
     try {
-      await CR.ping(state.settings.cardrushProxy);
-      const r = await CR.search(state.settings.cardrushProxy, 'ピカチュウ');
-      toast(`接続できました（「ピカチュウ」の検索結果 ${r.total}件）`, 'ok');
-    } finally { el.disabled = false; }
+      const v = await CR.ping();
+      const r = await CR.search('ピカチュウ');
+      toast(`接続できました（拡張機能 v${v}、「ピカチュウ」の検索結果 ${r.total}件）`, 'ok');
+    } finally { el.disabled = false; updateCrStatus(); }
+  },
+  'cr-open-site': async () => {
+    try { await CR.openSite(); } catch { window.open('https://www.cardrush-pokemon.jp/', '_blank', 'noopener'); }
   },
   'card-prev': () => goCard(-1),
   'card-next': () => goCard(1),

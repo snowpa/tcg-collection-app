@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "トレカ・コレクション カードラッシュ連携",
+  "version": "1.0.0",
+  "description": "トレカ・コレクション（Webアプリ）から、カードラッシュのカード名・画像を検索できるようにします。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzvu+9kDjyZg4EOi7Hn9I/rG+Fv3m1U9+/UAlXS19N/PW4q2fsPOlEcUDEfdcoPnUJkO2XNC9NUbgjBLPtC763fx42+WquMK2i4KGHM4zEw832pdYHjSxgC+2h+RT7K/sEzo5R/KMpidzr2nrNEq592b1SYVSYgnFDkBuubYdPrRhYaVpIENAMb2/K4AfCTEyXLDWqvDzSaerr9QcFNHgO/V7uCh/iX5jmQIVQEDlePviX57mTjRoEp30MfFcreM5x/DpErAlrPeoG0UgGRtbcYF5vNDbjpteh1/MgnEMLld/K1C/na5Y5byK5pXQtGYZfW6AtlkJBt/Y4PdLNB2xTwIDAQAB",
+  "background": { "service_worker": "background.js", "type": "module" },
+  "host_permissions": ["https://www.cardrush-pokemon.jp/*"],
+  "externally_connectable": {
+    "matches": ["https://snowpa.github.io/*", "http://localhost/*", "http://127.0.0.1/*"]
+  }
+}

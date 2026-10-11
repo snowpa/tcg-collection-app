@@ -1,38 +1,49 @@
-// カードラッシュ連携（GAS の中継ウェブアプリ経由で検索・画像取得）
+// カードラッシュ連携（Chrome 拡張機能「トレカ・コレクション カードラッシュ連携」経由で検索・画像取得）
 
-async function call(proxyUrl, params) {
-  if (!proxyUrl) throw new Error('設定画面で「カードラッシュ連携URL」（GAS ウェブアプリのURL）を入力してください');
-  const u = new URL(proxyUrl);
-  Object.entries(params).forEach(([k, v]) => u.searchParams.set(k, v));
-  // GAS のデプロイ設定が違うと、JSON ではなく Google のログイン画面が返る（またはCORSで読めない）
-  const DEPLOY_HINT = 'GAS の「デプロイを管理」で、次のユーザーとして実行「自分」、アクセスできるユーザー「全員」（「Google アカウントを持つ全員」ではない）にして、新しいバージョンでデプロイし直してください';
-  let res;
-  try {
-    res = await fetch(u, { redirect: 'follow' });
-  } catch {
-    throw new Error(`カードラッシュ連携URLに接続できません。${DEPLOY_HINT}`);
-  }
-  const text = await res.text();
-  let json;
-  try { json = JSON.parse(text); } catch {
-    if (/accounts\.google\.com|ServiceLogin|<html/i.test(text)) throw new Error(`中継スクリプトがログインを求めています。${DEPLOY_HINT}`);
-    throw new Error('カードラッシュ連携URLの応答が正しくありません。GAS を「ウェブアプリ」としてデプロイしたURL（…/exec）か確認してください');
-  }
-  if (json.error) throw new Error(json.error);
-  return json;
+// 拡張機能の ID（manifest.json の key で固定している）
+export const EXTENSION_ID = 'cblfamljonlennohgbbpkbnhpeaapfjf';
+
+export class NoExtensionError extends Error {}
+
+const NO_EXT = 'カードラッシュ連携の Chrome 拡張機能が見つかりません。PC版 Chrome に拡張機能を読み込んでください（設定画面の「カードラッシュ連携」を参照）。';
+
+function call(msg, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    // 拡張機能が入っていない（またはスマホ・Chrome 以外）の場合 chrome.runtime 自体がない
+    const rt = globalThis.chrome?.runtime;
+    if (!rt?.sendMessage) { reject(new NoExtensionError(NO_EXT)); return; }
+    const timer = setTimeout(() => reject(new Error('カードラッシュ連携の応答がありません。少し待ってから再試行してください')), timeoutMs);
+    try {
+      rt.sendMessage(EXTENSION_ID, msg, (res) => {
+        clearTimeout(timer);
+        const err = globalThis.chrome.runtime.lastError;
+        if (err || !res) { reject(new NoExtensionError(NO_EXT)); return; }
+        if (res.error) { reject(new Error(res.error)); return; }
+        resolve(res);
+      });
+    } catch {
+      clearTimeout(timer);
+      reject(new NoExtensionError(NO_EXT));
+    }
+  });
 }
 
-export const ping = (proxyUrl) => call(proxyUrl, {});
+/** 拡張機能が使えるか確認する。使えればバージョンを返す */
+export async function ping() {
+  return (await call({ action: 'ping' }, 5000)).version;
+}
 
-/** @returns {Promise<{items:{id,name,model,thumb,image,url}[], total:number, page:number}>} */
-export const search = (proxyUrl, q, page = 1) => call(proxyUrl, { action: 'search', q, page: String(page) });
+/** @returns {Promise<{items:{id,name,model,thumb,image,url,soldOut}[], total:number, page:number}>} */
+export const search = (q, page = 1) => call({ action: 'search', q, page });
 
 // 画像を dataURL で取得
-export async function imageDataUrl(proxyUrl, imageUrl) {
-  const path = new URL(imageUrl).pathname;
-  const r = await call(proxyUrl, { action: 'image', path });
+export async function imageDataUrl(imageUrl) {
+  const r = await call({ action: 'image', path: new URL(imageUrl).pathname });
   return `data:${r.mimeType};base64,${r.base64}`;
 }
+
+// ボット確認が出たときにカードラッシュをタブで開く
+export const openSite = () => call({ action: 'open' });
 
 /**
  * 「〔状態B〕マリィ【SR】{198/190}」+ 型番「s4a」を分解する
