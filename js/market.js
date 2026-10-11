@@ -64,15 +64,16 @@ const knownModel = (m) => {
 
 const round10 = (n) => Math.round(n / 10) * 10;
 
+const CR_PRODUCT = 'https://www.cardrush-pokemon.jp/product/';
+
 /**
- * 検索結果から相場を選ぶ
- * @param {{name:string, number?:string, setCode?:string, rarity?:string, grade?:string, sealed?:boolean,
- *          rank:'normal'|'A-'|'B'|'C', hint?:string, psaPos?:'low'|'mid'|'high'}} target
- *   hint は購入時の商品名やメモ（1ED・ミラーなどの手がかり）、psaPos は PSA の割合の目安のどこを使うか
+ * 【取得時に1回】検索結果から、手持ちのカードと同じ商品（状態・鑑定違いを含む）を集めて保存用の一覧にする
+ * @param {{name:string, number?:string, setCode?:string, rarity?:string, sealed?:boolean, hint?:string}} target
+ *   hint は購入時の商品名やメモ（1ED・ミラーなどの手がかり）
  * @param {{id,name,model,url,price,stock}[]} items カードラッシュの検索結果
- * @returns {{price:number, basis:string, estimated:boolean, itemId:string, url:string, listing:string} | {error:string}}
+ * @returns {{quotes:{id:string, n:string, p:number, s:number, k:string, r?:string, g?:string, d?:boolean}[]} | {error:string}}
  */
-export function estimate(target, items) {
+export function matchQuotes(target, items) {
   const own = splitVariant(target.name);
   const hint = norm([target.hint, target.name].join(' '));
   const cardR = norm(target.rarity) === 'promo' ? 'p' : norm(target.rarity);
@@ -124,48 +125,68 @@ export function estimate(target, items) {
     return { error: `同じ名前のカードが${variants.size}種類あり特定できません。カードラッシュで照合して番号・型番を入れてください` };
   }
 
-  // 在庫ありを優先し、その中で最安
-  const best = (xs) => [...xs].sort((a, b) => (b.it.stock > 0) - (a.it.stock > 0) || a.it.price - b.it.price)[0];
-  const out = (x, price, basis, estimated = false) => ({
-    price, basis, estimated, itemId: x.it.id, url: x.it.url, listing: x.it.name,
-  });
+  // 保存は必要な項目だけ（k: normal=無印 / cond=状態ランク / graded=鑑定品）
+  const quotes = list.filter((x) => x.r.kind !== 'other').map((x) => ({
+    id: x.it.id, n: x.it.name, p: x.it.price, s: x.it.stock || 0, k: x.r.kind,
+    ...(x.r.kind === 'cond' ? { r: x.r.rank } : {}),
+    ...(x.r.kind === 'graded' ? { g: x.r.grade, d: x.r.damaged } : {}),
+  }));
+  if (!quotes.length) return { error: '状態に合う商品が見つかりません' };
+  return { quotes };
+}
 
-  // 鑑定品: 同じ鑑定の販売価格（状態難は除く）
+/**
+ * 【表示のたびに】保存した商品一覧と、現在の状態・鑑定・設定から相場を計算する（通信なし）
+ * @param {ReturnType<typeof matchQuotes>['quotes']} quotes
+ * @param {{grade?:string, rank:'normal'|'A-'|'B'|'C', psaPos?:'low'|'mid'|'high'}} target
+ * @returns {{price:number, basis:string, estimated:boolean, itemId:string, url:string, listing:string} | {error:string}}
+ */
+export function priceFromQuotes(quotes, target) {
+  // 在庫ありを優先し、その中で最安
+  const best = (xs) => [...xs].sort((a, b) => (b.s > 0) - (a.s > 0) || a.p - b.p)[0];
+  const out = (q, price, basis, estimated = false) => ({ price, basis, estimated, itemId: q.id, url: CR_PRODUCT + q.id, listing: q.n });
+  const yenStr = (n) => `${n.toLocaleString('ja-JP')}円`;
+
   const grade = normGrade(target.grade);
   let note = '';
   // PSA: PSA10 の販売価格 × グレード別の割合
   const psa = grade.match(/^PSA(\d+(?:\.\d+)?)$/);
   if (psa) {
     const n = Math.max(1, Math.min(10, Math.floor(Number(psa[1]))));
-    const p10 = best(list.filter((x) => x.r.kind === 'graded' && x.r.grade === 'PSA10' && !x.r.damaged));
-    if (p10 && n === 10) return out(p10, p10.it.price, 'PSA10鑑定済の販売価格');
+    const p10 = best(quotes.filter((q) => q.k === 'graded' && q.g === 'PSA10' && !q.d));
+    if (p10 && n === 10) return out(p10, p10.p, 'PSA10鑑定済の販売価格');
     if (p10) {
       const pos = target.psaPos || 'mid';
       const [lo, hi] = PSA_RATIO[n];
       const ratio = psaRatio(n, pos);
-      return out(p10, round10(p10.it.price * ratio),
-        `PSA10 ${p10.it.price.toLocaleString('ja-JP')}円 × ${pct(ratio)}（PSA${n}の目安 ${pct(lo)}〜${pct(hi)}の${PSA_POS_LABEL[pos]}）`, true);
+      return out(p10, round10(p10.p * ratio), `PSA10 ${yenStr(p10.p)} × ${pct(ratio)}（PSA${n}の目安 ${pct(lo)}〜${pct(hi)}の${PSA_POS_LABEL[pos]}）`, true);
     }
     // PSA10 の販売がなければ、同じグレードの販売価格 → 未鑑定の価格の順で使う
   }
+  // その他の鑑定品: 同じ鑑定の販売価格（状態難は除く）
   if (grade) {
-    const hit = best(list.filter((x) => x.r.kind === 'graded' && x.r.grade === grade && !x.r.damaged));
-    if (hit) return out(hit, hit.it.price, `${grade}鑑定済の販売価格`);
+    const hit = best(quotes.filter((q) => q.k === 'graded' && q.g === grade && !q.d));
+    if (hit) return out(hit, hit.p, `${grade}鑑定済の販売価格`);
     note = `（${grade}の販売なし・未鑑定の価格で算出）`;
   }
 
   const want = target.rank || 'normal';
-  const ofRank = (rk) => list.filter((x) => (rk === 'normal' ? x.r.kind === 'normal' : x.r.kind === 'cond' && x.r.rank === rk));
+  const ofRank = (rk) => quotes.filter((q) => (rk === 'normal' ? q.k === 'normal' : q.k === 'cond' && q.r === rk));
   const exact = best(ofRank(want));
-  if (exact) return out(exact, exact.it.price, `${RANK_LABEL[want]}の販売価格${note}`, !!note);
+  if (exact) return out(exact, exact.p, `${RANK_LABEL[want]}の販売価格${note}`, !!note);
 
   // 同じ状態ランクの商品がない → 別ランクの価格を掛け率で換算（無印を優先）
   for (const rk of ['normal', 'A-', 'B', 'C']) {
-    const x = best(ofRank(rk));
-    if (!x) continue;
-    const price = round10((x.it.price / RANK_FACTOR[rk]) * RANK_FACTOR[want]);
-    const basis = `${RANK_LABEL[want]}の販売なし。${RANK_LABEL[rk]} ${x.it.price.toLocaleString('ja-JP')}円から換算${note}`;
-    return out(x, price, basis, true);
+    const q = best(ofRank(rk));
+    if (!q) continue;
+    const price = round10((q.p / RANK_FACTOR[rk]) * RANK_FACTOR[want]);
+    return out(q, price, `${RANK_LABEL[want]}の販売なし。${RANK_LABEL[rk]} ${yenStr(q.p)}から換算${note}`, true);
   }
   return { error: '状態に合う商品が見つかりません（鑑定品のみ・状態難のみなど）' };
+}
+
+// 照合と計算をまとめて行う（テスト用）
+export function estimate(target, items) {
+  const m = matchQuotes(target, items);
+  return m.error ? m : priceFromQuotes(m.quotes, target);
 }
