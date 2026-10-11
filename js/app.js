@@ -285,14 +285,15 @@ function condSummary(c) {
 }
 
 // 相場の計算に使う総合評価（S〜D）。未評価なら欠陥の程度から推定する
+// （欠陥なし→S=通常、軽微→B=状態A-、目立つ→C=状態B、重度・折れ/へこみ→D=状態C）
 function ratingOf(c) {
   const cond = condOf(c);
-  if (MK.RATING_PSA[cond.overall]) return cond.overall;
+  if (MK.RATING_RANK[cond.overall]) return cond.overall;
   const sev = activeDefects(cond).map(([k]) => cond.defects[k]);
   const bent = ['crease', 'dent'].some((k) => ['moderate', 'heavy'].includes(cond.defects[k]));
-  if (sev.includes('heavy') || bent) return 'C';
-  if (sev.includes('moderate')) return 'B';
-  if (sev.includes('light')) return 'A';
+  if (sev.includes('heavy') || bent) return 'D';
+  if (sev.includes('moderate')) return 'C';
+  if (sev.includes('light')) return 'B';
   return 'S';
 }
 
@@ -1001,7 +1002,7 @@ function viewDashboard() {
           <button class="btn small" data-action="market-all">相場を更新</button>
           <button class="btn small ghost" data-action="market-all" data-force="1" title="24時間以内に取得済みのカードも取り直す">すべて取り直す</button>
         </div></div>
-      <p class="muted small">カードラッシュから同じカードの状態別・鑑定別の販売価格をまとめて取得しておき、手持ちの状態に合わせてアプリ内で相場を計算します（状態や鑑定を変えても取り直しは不要）。鑑定品ではないカードは通常（無印）の価格に、評価 S＝100%・A＝PSA8相当・B＝PSA5相当・C＝PSA3相当・D＝PSA1相当の割合をかけます（未評価は欠陥チェックから推定）。PSA 鑑定品は PSA10 の価格 × グレード別の割合です。割合で計算した相場には「推定」が付きます。
+      <p class="muted small">カードラッシュから同じカードの状態別・鑑定別の販売価格をまとめて取得しておき、手持ちの状態に合わせてアプリ内で相場を計算します（状態や鑑定を変えても取り直しは不要）。鑑定品ではないカードは総合評価 S・A＝通常（無印）、B＝状態A-、C＝状態B、D＝状態C の販売価格（未評価は欠陥チェックから判断）。PSA 鑑定品は PSA10 の価格 × グレード別の割合です。該当する商品がなく換算・割合で計算した相場には「推定」が付きます。
         ${lastAt ? `最終更新 ${esc(new Date(lastAt).toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' }))}。` : ''}
         ${failed ? `<button class="link" data-action="filter-cond" data-cond="market-error">取得できなかったカード ${failed}件</button>（カードラッシュで照合して番号・型番を入れると取得できます）` : ''}</p>
       ${topMarket.length ? `<ol class="rank">${topMarket.map((c) => `<li><button class="rank-row" data-action="open-card" data-id="${c.id}">
@@ -1553,12 +1554,10 @@ function viewSettings() {
 
     <section class="panel">
       <h2>相場の計算</h2>
-      <p class="muted small">鑑定品ではないカードは、カードラッシュの通常（無印）の販売価格に、総合評価に応じた PSA 相当の割合をかけます（未評価は欠陥チェックから推定: 欠陥なし→S、軽微→A、目立つ→B、重度・折れ/へこみ→C）。</p>
-      <div class="table-wrap"><table class="table psa-table"><thead><tr><th>総合評価</th><th class="r">通常価格に対する割合</th></tr></thead>
-        <tbody>${Object.entries(MK.RATING_PSA).map(([r, n]) => {
-          const f = (x) => `${Math.round(x * 1000) / 10}%`;
-          return `<tr><td>${r}${n === 10 ? '（通常）' : `（PSA${n}相当）`}</td><td class="r">${n === 10 ? '100%' : `${f(MK.PSA_RATIO[n][0])} 〜 ${f(MK.PSA_RATIO[n][1])}（使用: ${f(MK.psaRatio(n, s.psaPos))}）`}</td></tr>`;
-        }).join('')}</tbody></table></div>
+      <p class="muted small">鑑定品ではないカードは、総合評価に対応するカードラッシュの状態ランクの販売価格を使います（該当する商品がなければ別の状態の価格から換算）。</p>
+      <div class="table-wrap"><table class="table psa-table"><thead><tr><th>総合評価</th><th class="r">使う販売価格</th></tr></thead>
+        <tbody>${Object.entries(MK.RATING_RANK).map(([r, rk]) => `<tr><td>${r}</td><td class="r">${MK.RANK_LABEL[rk]}</td></tr>`).join('')}
+          <tr><td>未評価</td><td class="r">欠陥なし→通常、軽微→状態A-、目立つ→状態B、重度・折れ/へこみ→状態C</td></tr></tbody></table></div>
       <p class="muted small">PSA 鑑定品の相場は、カードラッシュの PSA10 の販売価格に次の割合をかけて求めます（PSA10 の販売がない場合は同じグレードの販売価格、なければ鑑定品ではないカードと同じ計算）。</p>
       <div class="table-wrap"><table class="table psa-table"><thead><tr><th>グレード</th><th class="r">PSA10 を 100% としたときの目安</th></tr></thead>
         <tbody>${Object.keys(MK.PSA_RATIO).sort((a, b) => b - a).map((n) => {
