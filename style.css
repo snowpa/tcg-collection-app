@@ -351,3 +351,60 @@ img.broken { display: none; }
 .rank.plain .rank-row::before { content: none; }
 @media (max-width: 560px) { .dist-row { grid-template-columns: 120px 1fr 30px; } .defect-name { width: 100%; } }
 @media (max-width: 639px) { .img-box { max-width: 160px; } }
+
+/* ===== 大量のカード向け（ツールバー・追加読み込み・複数選択） ===== */
+.col-toolbar { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; background: var(--bg); }
+@media (min-width: 760px) {
+  .col-toolbar { position: sticky; top: var(--sticky-top, 0px); z-index: 15; padding: 8px 0; margin-top: -8px; border-bottom: 1px solid var(--border); }
+}
+.tb-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tb-row select { width: auto; }
+.btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.btn .count { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-text); font-size: .72rem; font-weight: 700; }
+.filter-panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.filter-panel[hidden] { display: none; }
+.chips-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chips-row:empty { display: none; }
+.fchip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 6px 3px 10px; border-radius: 999px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent); font: inherit; font-size: .8rem; cursor: pointer; }
+.fchip span { font-size: 1rem; line-height: 1; }
+.result-sum { margin: 4px 0 8px; }
+
+/* グリッドのサイズ */
+.grid.d-s { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.grid.d-s .tile-body { padding: 5px 6px 6px; }
+.grid.d-s .tile-meta, .grid.d-s .tile-price .warn-text { display: none; }
+.grid.d-s .tile-name { font-size: .75rem; }
+.grid.d-s .tile-price { font-size: .72rem; }
+.grid.d-l { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+@media (min-width: 760px) { .grid.d-l { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); } }
+.group-head { grid-column: 1 / -1; margin: 12px 0 0; padding-bottom: 4px; border-bottom: 2px solid var(--border); font-size: .95rem; }
+.group-head:first-child { margin-top: 0; }
+.table .group-row td { background: var(--surface2); font-weight: 700; font-size: .85rem; }
+.more { text-align: center; color: var(--muted); font-size: .8rem; padding: 16px 0 24px; min-height: 1px; }
+
+/* 列見出しで並び替え */
+.th-sort { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; white-space: nowrap; }
+.th-sort.on { color: var(--accent); }
+
+/* 複数選択 */
+.tick { position: absolute; bottom: 6px; right: 6px; z-index: 3; width: 24px; height: 24px; border-radius: 50%; border: 2px solid #fff; background: rgba(0, 0, 0, .35); box-shadow: 0 1px 3px rgba(0, 0, 0, .4); }
+.tile.sel { outline: 3px solid var(--accent); outline-offset: -1px; }
+.tile.sel .tick, tr.sel .tick { background: var(--accent); }
+.tile.sel .tick::after, tr.sel .tick::after { content: "✓"; display: grid; place-items: center; height: 100%; color: #fff; font-size: .8rem; font-weight: 700; }
+tr .tick { position: static; display: inline-block; border-color: var(--line2); background: var(--surface); }
+.table tbody tr.sel { background: var(--accent-soft); }
+.bulk {
+  position: fixed; left: 50%; transform: translateX(-50%); z-index: 30;
+  bottom: calc(68px + env(safe-area-inset-bottom)); width: min(calc(100vw - 16px), 760px);
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  background: var(--surface); border: 1px solid var(--accent); border-radius: 12px; padding: 8px 12px; box-shadow: 0 8px 30px rgba(0, 0, 0, .25);
+}
+@media (min-width: 860px) { .bulk { bottom: 20px; } }
+.main:has(.bulk) { padding-bottom: 120px; }
+
+/* カード詳細の前へ/次へ */
+.nav-pos { display: flex; align-items: center; gap: 2px; margin-left: auto; font-variant-numeric: tabular-nums; }
+.nav-pos .icon-btn { font-size: 1.6rem; line-height: 1; }
+.nav-pos .icon-btn:disabled { opacity: .3; cursor: default; }
+.dlg-foot { flex-wrap: wrap; }
+@media (max-width: 560px) { .filter-panel { grid-template-columns: 1fr 1fr; padding: 8px; } .filter-panel select { font-size: .85rem; } }

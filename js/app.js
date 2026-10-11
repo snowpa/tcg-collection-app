@@ -57,9 +57,10 @@ function readFileText(file) {
   });
 }
 
-// 画像を長辺 max px の JPEG に縮小して dataURL で返す（バックアップの容量対策）
-async function resizeImage(file, max = 800) {
-  const url = URL.createObjectURL(file);
+// 画像（File または dataURL）を長辺 max px の JPEG に縮小して dataURL で返す（容量対策）
+async function resizeImage(src, max = 800, quality = 0.85) {
+  const isFile = src instanceof Blob;
+  const url = isFile ? URL.createObjectURL(src) : src;
   try {
     const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
     const s = Math.min(1, max / Math.max(img.width, img.height));
@@ -67,11 +68,14 @@ async function resizeImage(file, max = 800) {
     cv.width = Math.round(img.width * s);
     cv.height = Math.round(img.height * s);
     cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-    return cv.toDataURL('image/jpeg', 0.85);
+    return cv.toDataURL('image/jpeg', quality);
   } finally {
-    URL.revokeObjectURL(url);
+    if (isFile) URL.revokeObjectURL(url);
   }
 }
+
+// 一覧用の小さなサムネイル（数百枚並べても軽いように）
+const makeThumb = (src) => resizeImage(src, 240, 0.8);
 
 // ================= 設定・状態 =================
 
@@ -109,18 +113,45 @@ function saveSettings() {
 const GRADES = ['未鑑定', 'PSA10', 'PSA9', 'PSA8', 'BGS10', 'BGS9.5', 'ARS10', 'CGC10'];
 const CONDITIONS = ['美品', '完美品', '目立つ傷なし', '傷あり', 'スリーブ保管', 'ローダー保管'];
 
+// 一覧で一度に描画する件数（スクロールで追加読み込み）
+const PAGE = 60;
+
+// 並び順・表示形式などの UI 設定はこの端末に記憶する
+const UI_KEY = 'tcg-collection-ui';
+const DEFAULT_FILTERS = { q: '', set: '', rarity: '', grade: '', tag: '', cond: '', sort: 'added-desc', layout: 'grid', density: 'm', group: false };
+function loadUi() {
+  try { return JSON.parse(localStorage.getItem(UI_KEY) || '{}'); } catch { return {}; }
+}
+function saveUi() {
+  const { q, ...filters } = state.filters;
+  try { localStorage.setItem(UI_KEY, JSON.stringify({ filters, filtersOpen: state.filtersOpen, setSort: state.setSort })); } catch { /* 保存不可の環境 */ }
+}
+const savedUi = loadUi();
+
 const state = {
   settings: loadSettings(),
   cards: [], // 削除済みは { id, deleted:true, updatedAt } の墓標として残す（マージ用）
   sets: [],
   processed: new Set(), // 取込済み・無視したメールID
   view: 'dashboard',
-  filters: { q: '', set: '', rarity: '', grade: '', tag: '', cond: '', sort: 'added-desc', layout: 'grid' },
+  filters: { ...DEFAULT_FILTERS, ...(savedUi.filters || {}), q: '' },
+  filtersOpen: !!savedUi.filtersOpen,
+  visible: PAGE, // 一覧で描画済みにする件数
+  rendered: 0,
+  resultIds: [], // 現在の絞り込み結果（詳細画面の前へ/次へに使う）
+  selectMode: false,
+  selected: new Set(),
   wishQ: '',
+  setQ: '',
+  setSort: savedUi.setSort || 'release',
   candidates: [],
   showAllCandidates: false,
   scanning: false,
   editing: null,
+  editingOrig: '', // 変更検知用のスナップショット
+  editPhotos: {}, // 編集中カードの状態写真 { id: dataURL }
+  removedPhotos: new Set(),
+  navIds: [],
   editingSet: null,
   dirty: false,
   localHandle: null,
@@ -251,11 +282,53 @@ async function saveCards(cards) {
   markDirty();
 }
 
-async function deleteCard(id) {
-  const tomb = { id, deleted: true, updatedAt: nowIso() };
-  await db.put('cards', tomb);
-  state.cards = state.cards.map((c) => (c.id === id ? tomb : c));
+async function deleteCards(ids) {
+  const t = nowIso();
+  const target = new Set(ids);
+  const photoIds = state.cards.filter((c) => target.has(c.id) && !c.deleted).flatMap((c) => c.cond?.photos || []);
+  const tombs = new Map(ids.map((id) => [id, { id, deleted: true, updatedAt: t }]));
+  await db.putMany('cards', [...tombs.values()]);
+  if (photoIds.length) await db.putMany('photos', photoIds.map((id) => ({ id, deleted: true, updatedAt: t })));
+  state.cards = state.cards.map((c) => tombs.get(c.id) || c);
   markDirty();
+}
+
+// 状態写真をまとめて読み込む
+async function loadPhotos(ids) {
+  const out = {};
+  for (const id of ids || []) {
+    const ph = await db.get('photos', id);
+    if (ph && !ph.deleted) out[id] = ph.data;
+  }
+  return out;
+}
+
+// 旧形式の移行: カード内に埋め込んだ状態写真を photos ストアへ移し、サムネイルを作る
+async function migrateCards() {
+  const changed = [];
+  for (const c of state.cards) {
+    if (c.deleted) continue;
+    let touched = false;
+    const photos = c.cond?.photos || [];
+    if (photos.some((ph) => String(ph).startsWith('data:'))) {
+      const ids = [];
+      for (const ph of photos) {
+        if (!String(ph).startsWith('data:')) { ids.push(ph); continue; }
+        const id = crypto.randomUUID();
+        await db.put('photos', { id, cardId: c.id, data: ph, updatedAt: c.updatedAt || nowIso() });
+        ids.push(id);
+      }
+      c.cond.photos = ids;
+      touched = true;
+    }
+    if (c.imageData && !c.thumb) {
+      try { c.thumb = await makeThumb(c.imageData); touched = true; } catch { /* 壊れた画像は無視 */ }
+    }
+    if (touched) changed.push(c);
+  }
+  // 派生データの補完なので updatedAt は変えない
+  if (changed.length) await db.putMany('cards', changed);
+  return changed.length;
 }
 
 async function saveProcessed() {
@@ -264,15 +337,16 @@ async function saveProcessed() {
 
 // ================= バックアップ（Google Drive / ローカル） =================
 
-function buildBackup() {
+async function buildBackup() {
   // API キーはバックアップに含めない
   const { geminiKey, ...settings } = state.settings;
   return {
     app: 'tcg-collection',
-    version: 1,
+    version: 2,
     exportedAt: nowIso(),
     cards: state.cards,
     sets: state.sets,
+    photos: await db.getAll('photos'),
     processedMails: [...state.processed],
     settings,
   };
@@ -311,13 +385,17 @@ async function applyBackup(data, mode) {
     sets = mergeById(state.sets, data.sets || []);
     (data.processedMails || []).forEach((id) => state.processed.add(id));
   }
+  const photos = mode === 'replace' ? (data.photos || []) : mergeById(await db.getAll('photos'), data.photos || []);
   await db.clear('cards');
   await db.putMany('cards', cards);
   await db.clear('sets');
   await db.putMany('sets', sets);
+  await db.clear('photos');
+  await db.putMany('photos', photos);
   await saveProcessed();
   state.cards = cards;
   state.sets = sets;
+  await migrateCards(); // 旧形式（version 1）のバックアップにも対応
   render();
 }
 
@@ -326,8 +404,8 @@ function markDirty() {
   state.dirty = true;
   updateSyncButton();
   clearTimeout(autoTimer);
-  // 変更から数秒後に、許可済みの保存先へ自動保存（ポップアップは出さない）
-  autoTimer = setTimeout(() => autoBackup(), 4000);
+  // 連続して編集している間は待ち、落ち着いてから許可済みの保存先へ自動保存（ポップアップは出さない）
+  autoTimer = setTimeout(() => autoBackup(), 30_000);
 }
 
 async function autoBackup() {
@@ -351,7 +429,7 @@ async function syncNow({ interactive = true } = {}) {
   try {
     if (state.settings.clientId && (interactive || G.hasToken(G.SCOPES.drive))) {
       const token = await G.getToken(G.SCOPES.drive, state.settings.clientId);
-      await G.driveSave(token, buildBackup());
+      await G.driveSave(token, await buildBackup());
       state.settings.lastDriveBackup = nowIso();
       done.push('Googleドライブ');
     }
@@ -405,15 +483,15 @@ async function writeLocalFile(interactive) {
   if (perm !== 'granted' && interactive) perm = await h.requestPermission({ mode: 'readwrite' });
   if (perm !== 'granted') return false;
   const w = await h.createWritable();
-  await w.write(JSON.stringify(buildBackup()));
+  await w.write(JSON.stringify(await buildBackup()));
   await w.close();
   state.settings.lastLocalBackup = nowIso();
   saveSettings();
   return true;
 }
 
-function exportJson() {
-  download(`tcg-collection-${today().replace(/-/g, '')}.json`, JSON.stringify(buildBackup(), null, 1), 'application/json');
+async function exportJson() {
+  download(`tcg-collection-${today().replace(/-/g, '')}.json`, JSON.stringify(await buildBackup()), 'application/json');
   state.settings.lastLocalBackup = nowIso();
   saveSettings();
   render();
@@ -701,27 +779,39 @@ function render() {
     const el = $('#asset-chart');
     if (el) lineChart(el, costSeries());
   }
-  if (state.view === 'collection') renderResults();
+  if (state.view === 'collection') renderResults({ keep: true });
+  if (state.view === 'sets') renderSetList();
   if (state.view === 'import') renderScanResults();
   updateSyncButton();
 }
 
+// 保存後などに、スクロール位置と読み込み済み件数を保ったまま再描画する
+function refreshView() {
+  const y = window.scrollY;
+  if (state.view === 'collection' && $('#results')) renderResults({ keep: true }); else render();
+  window.scrollTo(0, y);
+}
+
+const thumbOf = (c) => c.thumb || c.imageData || c.imageUrl;
+
 function tileHtml(c) {
-  const img = c.imageData || c.imageUrl;
+  const img = thumbOf(c);
   const cond = condOf(c);
   const issues = activeDefects(cond).length;
+  const sel = state.selected.has(c.id);
   return `
-  <button class="tile" data-action="open-card" data-id="${c.id}">
+  <button class="tile${sel ? ' sel' : ''}" data-action="open-card" data-id="${c.id}"${state.selectMode ? ` aria-pressed="${sel}"` : ''}>
     <div class="tile-img">
-      ${img ? `<img src="${esc(img)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}
+      ${img ? `<img src="${esc(img)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" alt="">` : ''}
       <span class="ph">${esc(title(c).slice(0, 18))}</span>
       ${c.grade && c.grade !== '未鑑定' ? `<span class="badge grade">${esc(c.grade)}</span>` : ''}
       ${qty(c) > 1 ? `<span class="badge qty">×${qty(c)}</span>` : ''}
       ${cond.overall ? `<span class="badge rating r-${esc(cond.overall)}" title="状態評価">${esc(cond.overall)}</span>` : ''}
+      ${state.selectMode ? '<span class="tick" aria-hidden="true"></span>' : ''}
     </div>
     <div class="tile-body">
       <div class="tile-name">${esc(title(c))}</div>
-      <div class="tile-meta">${esc([c.rarity, c.setCode, c.number].filter(Boolean).join(' · ') || ' ')}</div>
+      <div class="tile-meta">${esc([c.rarity, c.setCode, c.number].filter(Boolean).join(' · ') || '\u00a0')}</div>
       <div class="tile-price"><span>${yen(c.status === 'wish' ? c.targetPrice || null : c.purchasePrice || null)}</span>
         ${issues ? `<span class="warn-text" title="${esc(condSummary(c))}">要注意 ${issues}</span>` : ''}</div>
     </div>
@@ -810,13 +900,27 @@ function viewDashboard() {
 
 // ---------- コレクション ----------
 
+const COND_FILTERS = [
+  ...COND_RATINGS.map(([k, l]) => [k, `評価 ${l}`]),
+  ['unrated', '未評価'], ['issues', '欠陥あり'], ['crease', '折れ・へこみあり'], ['center-ng', 'センタリング基準外'],
+];
+const SORTS = [
+  ['added-desc', '登録が新しい順'], ['added-asc', '登録が古い順'], ['purchase-desc', '購入日が新しい順'], ['purchase-asc', '購入日が古い順'],
+  ['price-desc', '購入価格が高い順'], ['price-asc', '購入価格が低い順'], ['cond', '状態が良い順'], ['name', '名前順'], ['number', 'セット・番号順'],
+];
+const setLabelOf = (c) => [c.setCode, c.setName].filter(Boolean).join(' ') || 'セット未設定';
+const numOf = (c) => P.parseCardNumber(c.number)?.n ?? 9e9;
+
 function filteredCards() {
   const f = state.filters;
   let list = live('owned');
   if (f.q) {
-    const q = f.q.toLowerCase();
-    list = list.filter((c) => [c.name, c.rawTitle, c.setName, c.setCode, c.number, c.rarity, c.memo, c.grade, (c.tags || []).join(' ')]
-      .join(' ').toLowerCase().includes(q));
+    // 空白区切りの AND 検索
+    const words = f.q.toLowerCase().split(/\s+/).filter(Boolean);
+    list = list.filter((c) => {
+      const text = [c.name, c.rawTitle, c.setName, c.setCode, c.number, c.rarity, c.memo, c.grade, c.shop, c.condition, (c.tags || []).join(' ')].join(' ').toLowerCase();
+      return words.every((w) => text.includes(w));
+    });
   }
   if (f.set) list = list.filter((c) => setKey(c) === f.set);
   if (f.rarity) list = list.filter((c) => c.rarity === f.rarity);
@@ -828,30 +932,47 @@ function filteredCards() {
       if (f.cond === 'unrated') return !cond.overall;
       if (f.cond === 'issues') return activeDefects(cond).length > 0;
       if (f.cond === 'crease') return ['crease', 'dent'].some((k) => cond.defects[k] !== 'none');
-      if (f.cond === 'center-ng') return [['front', 'front'], ['back', 'back']].some(([s, k]) => centeringOf(cond.centering[s], k)?.ok === false);
+      if (f.cond === 'center-ng') return ['front', 'back'].some((k) => centeringOf(cond.centering[k], k)?.ok === false);
       return cond.overall === f.cond;
     });
   }
+  // 比較用の値は先に1回だけ計算しておく（1000件でも並び替えが重くならないように）
+  const rank = new Map(list.map((c) => [c.id, 'SABCD'.indexOf(condOf(c).overall) + 1 || 9]));
   const by = {
     'added-desc': (a, b) => String(b.createdAt).localeCompare(String(a.createdAt)),
-    'purchase-desc': (a, b) => String(b.purchaseDate).localeCompare(String(a.purchaseDate)),
+    'added-asc': (a, b) => String(a.createdAt).localeCompare(String(b.createdAt)),
+    'purchase-desc': (a, b) => String(b.purchaseDate || '').localeCompare(String(a.purchaseDate || '')),
+    'purchase-asc': (a, b) => String(a.purchaseDate || '9999').localeCompare(String(b.purchaseDate || '9999')),
     'price-desc': (a, b) => num(b.purchasePrice) - num(a.purchasePrice),
     'price-asc': (a, b) => num(a.purchasePrice) - num(b.purchasePrice),
-    // 状態評価順（S が先、未評価は最後）
-    cond: (a, b) => ('SABCD'.indexOf(condOf(a).overall) + 1 || 9) - ('SABCD'.indexOf(condOf(b).overall) + 1 || 9),
+    cond: (a, b) => rank.get(a.id) - rank.get(b.id),
     name: (a, b) => title(a).localeCompare(title(b), 'ja'),
-    number: (a, b) => setKey(a).localeCompare(setKey(b)) || (P.parseCardNumber(a.number)?.n ?? 9e9) - (P.parseCardNumber(b.number)?.n ?? 9e9),
+    number: (a, b) => setKey(a).localeCompare(setKey(b)) || numOf(a) - numOf(b),
   };
-  return list.sort(by[f.sort] || by['added-desc']);
+  const main = by[f.sort] || by['added-desc'];
+  // セットごと表示ではセット単位にまとめる（セット未設定は最後）
+  const group = (a, b) => (!setKey(a) - !setKey(b)) || setLabelOf(a).localeCompare(setLabelOf(b), 'ja');
+  return list.sort(f.group ? (a, b) => group(a, b) || main(a, b) : main);
 }
 
 function setOptions() {
   const map = new Map();
-  live().forEach((c) => { const k = setKey(c); if (k && !map.has(k)) map.set(k, [c.setCode, c.setName].filter(Boolean).join(' ')); });
+  live().forEach((c) => { const k = setKey(c); if (k && !map.has(k)) map.set(k, setLabelOf(c)); });
   return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ja'));
 }
 
 const opt = (value, label, cur) => `<option value="${esc(value)}"${value === cur ? ' selected' : ''}>${esc(label)}</option>`;
+
+function activeFilterChips() {
+  const f = state.filters;
+  const chips = [];
+  if (f.set) chips.push(['set', `セット: ${new Map(setOptions()).get(f.set) || f.set}`]);
+  if (f.rarity) chips.push(['rarity', `レアリティ: ${f.rarity}`]);
+  if (f.grade) chips.push(['grade', `鑑定: ${f.grade === 'graded' ? '鑑定済み' : f.grade}`]);
+  if (f.cond) chips.push(['cond', `状態: ${new Map(COND_FILTERS).get(f.cond) || f.cond}`]);
+  if (f.tag) chips.push(['tag', `#${f.tag}`]);
+  return chips;
+}
 
 function viewCollection() {
   const f = state.filters;
@@ -859,57 +980,218 @@ function viewCollection() {
   const rarities = [...new Set(owned.map((c) => c.rarity).filter(Boolean))].sort();
   const tags = [...new Set(owned.flatMap((c) => c.tags || []))].sort();
   const grades = [...new Set(owned.map((c) => c.grade || '未鑑定'))].sort();
+  const seg = (action, key, cur, items) => items.map(([v, l]) => `<button class="${cur === v ? 'on' : ''}" data-action="${action}" data-${key}="${v}" aria-pressed="${cur === v}">${l}</button>`).join('');
   return `
-    <div class="toolbar">
-      <input type="search" class="grow" placeholder="カード名・セット・タグで検索" value="${esc(f.q)}" data-filter="q" aria-label="検索">
-      <select data-filter="set" aria-label="セット">${opt('', 'すべてのセット', f.set)}${setOptions().map(([k, l]) => opt(k, l, f.set)).join('')}</select>
-      <select data-filter="rarity" aria-label="レアリティ">${opt('', 'レアリティ', f.rarity)}${rarities.map((r) => opt(r, r, f.rarity)).join('')}</select>
-      <select data-filter="grade" aria-label="鑑定">${opt('', '鑑定', f.grade)}${opt('graded', '鑑定済みすべて', f.grade)}${grades.map((g) => opt(g, g, f.grade)).join('')}</select>
-      <select data-filter="cond" aria-label="状態">${opt('', '状態', f.cond)}${COND_RATINGS.map(([k, l]) => opt(k, `評価 ${l}`, f.cond)).join('')}
-        ${opt('unrated', '未評価', f.cond)}${opt('issues', '欠陥ありすべて', f.cond)}${opt('crease', '折れ・へこみあり', f.cond)}${opt('center-ng', 'センタリング基準外', f.cond)}</select>
-      ${tags.length ? `<select data-filter="tag" aria-label="タグ">${opt('', 'タグ', f.tag)}${tags.map((t) => opt(t, `#${t}`, f.tag)).join('')}</select>` : ''}
-      <select data-filter="sort" aria-label="並び替え">
-        ${[['added-desc', '登録が新しい順'], ['purchase-desc', '購入日が新しい順'], ['price-desc', '購入価格が高い順'], ['price-asc', '購入価格が低い順'],
-          ['cond', '状態が良い順'], ['name', '名前順'], ['number', 'セット・番号順']].map(([v, l]) => opt(v, l, f.sort)).join('')}
-      </select>
-      <div class="seg" role="group" aria-label="表示切替">
-        <button class="${f.layout === 'grid' ? 'on' : ''}" data-action="layout" data-layout="grid">グリッド</button>
-        <button class="${f.layout === 'list' ? 'on' : ''}" data-action="layout" data-layout="list">リスト</button>
+    <div class="col-toolbar">
+      <div class="tb-row">
+        <input type="search" id="col-search" class="grow" placeholder="検索（名前・セット・番号・タグ）" value="${esc(f.q)}" data-filter="q" aria-label="検索（/ キーでも移動）">
+        <button class="btn${state.filtersOpen ? ' on' : ''}" data-action="toggle-filters" aria-expanded="${state.filtersOpen}" aria-controls="filter-panel">絞り込み</button>
+        <select data-filter="sort" aria-label="並び替え">${SORTS.map(([v, l]) => opt(v, l, f.sort)).join('')}</select>
       </div>
-      <button class="btn primary" data-action="new-card">＋ 追加</button>
+      <div class="filter-panel" id="filter-panel"${state.filtersOpen ? '' : ' hidden'}>
+        <select data-filter="set" aria-label="セット">${opt('', 'セット: すべて', f.set)}${setOptions().map(([k, l]) => opt(k, l, f.set)).join('')}</select>
+        <select data-filter="rarity" aria-label="レアリティ">${opt('', 'レアリティ: すべて', f.rarity)}${rarities.map((r) => opt(r, r, f.rarity)).join('')}</select>
+        <select data-filter="grade" aria-label="鑑定">${opt('', '鑑定: すべて', f.grade)}${opt('graded', '鑑定済みすべて', f.grade)}${grades.map((g) => opt(g, g, f.grade)).join('')}</select>
+        <select data-filter="cond" aria-label="状態">${opt('', '状態: すべて', f.cond)}${COND_FILTERS.map(([k, l]) => opt(k, l, f.cond)).join('')}</select>
+        <select data-filter="tag" aria-label="タグ" ${tags.length ? '' : 'disabled'}>${opt('', tags.length ? 'タグ: すべて' : 'タグなし', f.tag)}${tags.map((t) => opt(t, `#${t}`, f.tag)).join('')}</select>
+      </div>
+      <div class="tb-row">
+        <div class="seg" role="group" aria-label="表示形式">${seg('layout', 'layout', f.layout, [['grid', 'グリッド'], ['list', 'リスト']])}</div>
+        ${f.layout === 'grid' ? `<div class="seg" role="group" aria-label="カードの大きさ">${seg('density', 'density', f.density, [['l', '大'], ['m', '中'], ['s', '小']])}</div>` : ''}
+        <label class="check small"><input type="checkbox" data-filter="group" ${f.group ? 'checked' : ''}> セットごと</label>
+        <span class="spacer"></span>
+        <button class="btn${state.selectMode ? ' on' : ''}" data-action="toggle-select">${state.selectMode ? '選択を終了' : '選択'}</button>
+        <button class="btn primary" data-action="new-card">＋ 追加</button>
+      </div>
+      <div id="chips" class="chips-row"></div>
     </div>
-    <div id="results"></div>`;
+    <div id="results"></div>
+    <div id="bulk-bar"></div>`;
 }
 
-function renderResults() {
+let moreObserver = null;
+
+function renderResults({ keep = false } = {}) {
   const el = $('#results');
   if (!el) return;
   const list = filteredCards();
-  const summary = `<p class="muted small">${list.length}種類 / ${sum(list, qty)}枚 ・ 購入額 ${yen(sum(list, cardCost))}</p>`;
+  state.resultIds = list.map((c) => c.id);
+  if (!keep) state.visible = PAGE;
+  state.groupCounts = new Map();
+  if (state.filters.group) list.forEach((c) => state.groupCounts.set(setKey(c), (state.groupCounts.get(setKey(c)) || 0) + 1));
+
+  // 絞り込み条件のチップ
+  const chips = activeFilterChips();
+  $('#chips').innerHTML = chips.map(([k, l]) => `<button class="fchip" data-action="remove-filter" data-key="${k}" aria-label="${esc(l)} を解除">${esc(l)}<span aria-hidden="true">×</span></button>`).join('')
+    + (chips.length > 1 ? '<button class="link small" data-action="clear-filters">すべて解除</button>' : '');
+  const fb = $('[data-action="toggle-filters"]');
+  if (fb) fb.innerHTML = `絞り込み${chips.length ? `<span class="count">${chips.length}</span>` : ''}`;
+
+  const summary = `<p class="muted small result-sum">${list.length}種類 / ${sum(list, qty)}枚 ・ 購入額 ${yen(sum(list, cardCost))}</p>`;
+  moreObserver?.disconnect();
   if (!list.length) {
     el.innerHTML = live('owned').length
-      ? emptyState('条件に一致するカードがありません。', '<button class="btn" data-action="clear-filters">絞り込みを解除</button>')
+      ? emptyState('条件に一致するカードがありません。', '<button class="btn" data-action="clear-filters">絞り込みと検索を解除</button>')
       : emptyState('まだカードがありません。', '<button class="btn primary" data-action="new-card">＋ カードを追加</button><button class="btn" data-action="nav" data-view="import">取り込む</button>');
+    renderBulkBar();
     return;
   }
-  if (state.filters.layout === 'list') {
+  const f = state.filters;
+  if (f.layout === 'list') {
+    const sortTh = (label, keys, cls = '') => {
+      const on = keys.includes(f.sort);
+      const arrow = on ? (f.sort.endsWith('-asc') || ['name', 'number', 'cond'].includes(f.sort) ? ' ▲' : ' ▼') : '';
+      return `<th class="${cls}"><button class="th-sort${on ? ' on' : ''}" data-action="sort-by" data-sorts="${keys.join(',')}">${label}${arrow}</button></th>`;
+    };
     el.innerHTML = summary + `<div class="table-wrap"><table class="table">
-      <thead><tr><th></th><th>カード</th><th>セット / 番号</th><th>鑑定</th><th>状態</th><th>欠陥</th><th class="r">枚数</th><th class="r">購入価格</th></tr></thead>
-      <tbody>${list.map((c) => {
-        const img = c.imageData || c.imageUrl;
-        const cond = condOf(c);
-        return `<tr data-action="open-card" data-id="${c.id}" tabindex="0">
-          <td><span class="thumb">${img ? `<img src="${esc(img)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}</span></td>
-          <td><strong>${esc(title(c))}</strong><br><span class="muted small">${esc(c.rarity)}</span></td>
-          <td class="small">${esc([c.setCode, c.setName].filter(Boolean).join(' '))}<br>${esc(c.number)}</td>
-          <td>${esc(c.grade !== '未鑑定' ? c.grade : '')}</td>
-          <td>${cond.overall ? `<span class="badge rating r-${esc(cond.overall)}">${esc(cond.overall)}</span>` : '<span class="muted small">未評価</span>'}</td>
-          <td class="small">${esc(activeDefects(cond).map(([k, l]) => `${l}(${SEVERITY_LABEL[cond.defects[k]]})`).join('、'))}</td>
-          <td class="r">${qty(c)}</td><td class="r">${yen(c.purchasePrice || null)}</td></tr>`;
-      }).join('')}</tbody></table></div>`;
+      <thead><tr>${state.selectMode ? '<th></th>' : ''}<th></th>${sortTh('カード', ['name'])}${sortTh('セット / 番号', ['number'])}<th>鑑定</th>
+        ${sortTh('状態', ['cond'])}<th>欠陥</th><th class="r">枚数</th>${sortTh('購入価格', ['price-desc', 'price-asc'], 'r')}${sortTh('購入日', ['purchase-desc', 'purchase-asc'])}</tr></thead>
+      <tbody id="rows"></tbody></table></div><div id="more" class="more" aria-live="polite"></div>`;
   } else {
-    el.innerHTML = summary + `<div class="grid">${list.map(tileHtml).join('')}</div>`;
+    el.innerHTML = summary + `<div id="rows" class="grid d-${esc(f.density)}"></div><div id="more" class="more" aria-live="polite"></div>`;
   }
+  state.rendered = 0;
+  appendRows(list, state.visible);
+  watchMore(list);
+  renderBulkBar();
+}
+
+function rowHtml(c) {
+  const img = thumbOf(c);
+  const cond = condOf(c);
+  const sel = state.selected.has(c.id);
+  return `<tr class="${sel ? 'sel' : ''}" data-action="open-card" data-id="${c.id}" tabindex="0">
+    ${state.selectMode ? `<td><span class="tick" aria-hidden="true"></span></td>` : ''}
+    <td><span class="thumb">${img ? `<img src="${esc(img)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" alt="">` : ''}</span></td>
+    <td><strong>${esc(title(c))}</strong><br><span class="muted small">${esc(c.rarity)}</span></td>
+    <td class="small">${esc([c.setCode, c.setName].filter(Boolean).join(' '))}<br>${esc(c.number)}</td>
+    <td>${esc(c.grade !== '未鑑定' ? c.grade : '')}</td>
+    <td>${cond.overall ? `<span class="badge rating r-${esc(cond.overall)}">${esc(cond.overall)}</span>` : '<span class="muted small">未評価</span>'}</td>
+    <td class="small">${esc(activeDefects(cond).map(([k, l]) => `${l}(${SEVERITY_LABEL[cond.defects[k]]})`).join('、'))}</td>
+    <td class="r">${qty(c)}</td><td class="r">${yen(c.purchasePrice || null)}</td><td class="small">${esc(c.purchaseDate || '')}</td></tr>`;
+}
+
+function groupHeadHtml(c, isList) {
+  const n = state.groupCounts.get(setKey(c)) || 0;
+  const label = `${esc(setLabelOf(c))} <span class="muted small">${n}種類</span>`;
+  return isList
+    ? `<tr class="group-row"><td colspan="${state.selectMode ? 11 : 10}">${label}</td></tr>`
+    : `<h3 class="group-head">${label}</h3>`;
+}
+
+// list の [描画済み, upto) を末尾に追加する
+function appendRows(list, upto) {
+  const rows = $('#rows');
+  if (!rows) return;
+  const from = state.rendered;
+  const to = Math.min(upto, list.length);
+  if (to > from) {
+    const isList = state.filters.layout === 'list';
+    let html = '';
+    for (let i = from; i < to; i++) {
+      const c = list[i];
+      if (state.filters.group && (i === 0 || setKey(c) !== setKey(list[i - 1]))) html += groupHeadHtml(c, isList);
+      html += isList ? rowHtml(c) : tileHtml(c);
+    }
+    rows.insertAdjacentHTML('beforeend', html);
+    state.rendered = to;
+  }
+  const more = $('#more');
+  if (more) more.textContent = state.rendered < list.length ? `${state.rendered} / ${list.length} 件を表示中（スクロールで続きを表示）` : '';
+}
+
+// 一覧の末尾が見えたら続きを描画する
+function watchMore(list) {
+  const more = $('#more');
+  if (!more || state.rendered >= list.length || !('IntersectionObserver' in window)) return;
+  const near = () => more.getBoundingClientRect().top < window.innerHeight + 800;
+  moreObserver = new IntersectionObserver((entries) => {
+    if (!entries.some((e) => e.isIntersecting)) return;
+    // 追加しても末尾が画面付近に残る場合は続けて追加
+    do {
+      state.visible = state.rendered + PAGE;
+      appendRows(list, state.visible);
+    } while (state.rendered < list.length && near());
+    if (state.rendered >= list.length) moreObserver.disconnect();
+  }, { rootMargin: '800px 0px' });
+  moreObserver.observe(more);
+}
+
+// ---------- 複数選択・一括操作 ----------
+
+function renderBulkBar() {
+  const el = $('#bulk-bar');
+  if (!el) return;
+  if (!state.selectMode) { el.innerHTML = ''; return; }
+  const n = state.selected.size;
+  el.innerHTML = `<div class="bulk" role="region" aria-label="一括操作">
+    <strong>${n}件選択中</strong>
+    <button class="btn small ghost" data-action="select-all">表示中の${state.resultIds.length}件をすべて選択</button>
+    ${n ? '<button class="btn small ghost" data-action="select-none">選択解除</button>' : ''}
+    <span class="spacer"></span>
+    <button class="btn small" data-action="bulk-edit" ${n ? '' : 'disabled'}>一括編集</button>
+    <button class="btn small danger" data-action="bulk-delete" ${n ? '' : 'disabled'}>削除</button>
+  </div>`;
+}
+
+function toggleSelected(el) {
+  const id = el.dataset.id;
+  if (state.selected.has(id)) state.selected.delete(id); else state.selected.add(id);
+  const on = state.selected.has(id);
+  el.classList.toggle('sel', on);
+  if (el.tagName === 'BUTTON') el.setAttribute('aria-pressed', String(on));
+  renderBulkBar();
+}
+
+function openBulk() {
+  const n = state.selected.size;
+  $('#bulk-form').innerHTML = `
+    <header class="dlg-head"><h2>${n}件を一括編集</h2>
+      <button type="button" class="icon-btn" data-action="close-bulk" aria-label="閉じる">×</button></header>
+    <div class="dlg-body">
+      <p class="muted small">入力した項目だけを書き換えます。空欄・「変更しない」の項目はそのままです。</p>
+      <div class="grid2">
+        <label class="fld"><span>区分</span><select name="status">${opt('', '変更しない', '')}${opt('owned', '所持', '')}${opt('wish', 'ほしいもの', '')}</select></label>
+        <label class="fld"><span>状態の総合評価</span><select name="overall">${opt('', '変更しない', '')}${opt('-', '未評価に戻す', '')}${COND_RATINGS.map(([k, l]) => opt(k, l, '')).join('')}</select></label>
+        ${fld('点検日', 'inspectedAt', '', 'date')}
+        ${fld('セットコード', 'setCode', '', 'text')}
+        ${fld('セット名', 'setName', '', 'text')}
+        ${fld('鑑定', 'grade', '', 'text', 'list="dl-grade"')}
+        ${fld('購入先', 'shop', '', 'text', 'list="dl-shop"')}
+        ${fld('購入日', 'purchaseDate', '', 'date')}
+        ${fld('タグを追加（カンマ区切り）', 'addTags', '', 'text')}
+        ${fld('タグを外す（カンマ区切り）', 'removeTags', '', 'text')}
+      </div>
+    </div>
+    <footer class="dlg-foot"><span class="spacer"></span>
+      <button type="button" class="btn ghost" data-action="close-bulk">キャンセル</button>
+      <button type="submit" class="btn primary">${n}件に適用</button></footer>`;
+  $('#bulk-dialog').showModal();
+}
+
+async function applyBulk() {
+  const fd = new FormData($('#bulk-form'));
+  const v = (k) => String(fd.get(k) ?? '').trim();
+  const byId = new Map(state.cards.map((c) => [c.id, c]));
+  const add = splitList(v('addTags'));
+  const rm = new Set(splitList(v('removeTags')));
+  const changed = [];
+  for (const id of state.selected) {
+    const c0 = byId.get(id);
+    if (!c0 || c0.deleted) continue;
+    const c = structuredClone(c0);
+    c.cond = condOf(c);
+    if (v('status')) c.status = v('status');
+    for (const k of ['setCode', 'setName', 'grade', 'shop', 'purchaseDate']) if (v(k)) c[k] = v(k);
+    if (v('overall')) c.cond.overall = v('overall') === '-' ? '' : v('overall');
+    if (v('inspectedAt')) c.cond.inspectedAt = v('inspectedAt');
+    if (add.length || rm.size) c.tags = [...new Set([...(c.tags || []), ...add])].filter((t) => !rm.has(t));
+    changed.push(c);
+  }
+  await saveCards(changed);
+  $('#bulk-dialog').close();
+  toast(`${changed.length}件を更新しました`, 'ok');
+  refreshView();
 }
 
 // ---------- セット（コンプ率） ----------
@@ -948,22 +1230,42 @@ function setStats() {
 }
 
 function viewSets() {
-  const stats = setStats();
   return `
     <div class="panel-head"><h1>セット別コンプリート</h1><button class="btn primary" data-action="new-set">＋ セットを登録</button></div>
     <p class="muted small">カードの「セットコード / セット名」と「番号（例: 198/190）」から自動集計します。分母を超える番号（SR・SAR など）はシークレットとして別カウントします。</p>
-    ${stats.length ? `<div class="set-list">${stats.map((g) => {
-      const pct = g.total ? Math.min(100, (g.base / g.total) * 100) : 0;
-      return `<div class="set-row">
-        <button class="set-main" data-action="filter-set" data-key="${esc(g.key)}">
-          <span class="set-title"><span class="code">${esc(g.code || '')}</span> ${esc(g.name || '')}</span>
-          <span class="bar"><i style="width:${pct}%"></i></span>
-          <span class="set-nums">${g.total ? `${g.base} / ${g.total}（${pct.toFixed(0)}%）` : `${g.base}種`}${g.secret ? ` ＋シークレット ${g.secret}` : ''}
-            ・ ${g.qty}枚 ・ ${yen(g.value)}</span>
-        </button>
-        <button class="btn small ghost" data-action="edit-set" data-key="${esc(g.key)}">編集</button>
-      </div>`;
-    }).join('')}</div>` : emptyState('セット情報のあるカードがまだありません。カードにセットコードと番号を入れるか、AIでカード判定するとここに表示されます。')}`;
+    <div class="toolbar">
+      <input type="search" class="grow" placeholder="セットを検索" value="${esc(state.setQ)}" data-filter="setQ" aria-label="セットを検索">
+      <select data-filter="setSort" aria-label="並び替え">
+        ${[['release', '発売日が新しい順'], ['progress', 'コンプ率が高い順'], ['qty', '所持枚数が多い順'], ['name', 'セットコード順']].map(([v, l]) => opt(v, l, state.setSort)).join('')}
+      </select>
+    </div>
+    <div id="set-results"></div>`;
+}
+
+function renderSetList() {
+  const el = $('#set-results');
+  if (!el) return;
+  const q = state.setQ.toLowerCase();
+  const pctOf = (g) => (g.total ? Math.min(100, (g.base / g.total) * 100) : 0);
+  const sorters = {
+    release: (a, b) => String(b.master?.releaseDate || '').localeCompare(String(a.master?.releaseDate || '')) || b.qty - a.qty,
+    progress: (a, b) => pctOf(b) - pctOf(a),
+    qty: (a, b) => b.qty - a.qty,
+    name: (a, b) => String(a.code || a.name).localeCompare(String(b.code || b.name), 'ja', { numeric: true }),
+  };
+  const stats = setStats().filter((g) => !q || `${g.code} ${g.name}`.toLowerCase().includes(q)).sort(sorters[state.setSort] || sorters.release);
+  el.innerHTML = stats.length ? `<p class="muted small">${stats.length}セット</p><div class="set-list">${stats.map((g) => {
+    const pct = pctOf(g);
+    return `<div class="set-row">
+      <button class="set-main" data-action="filter-set" data-key="${esc(g.key)}">
+        <span class="set-title"><span class="code">${esc(g.code || '')}</span> ${esc(g.name || '')}</span>
+        <span class="bar"><i style="width:${pct}%"></i></span>
+        <span class="set-nums">${g.total ? `${g.base} / ${g.total}（${pct.toFixed(0)}%）` : `${g.base}種`}${g.secret ? ` ＋シークレット ${g.secret}` : ''}
+          ・ ${g.qty}枚 ・ ${yen(g.value)}</span>
+      </button>
+      <button class="btn small ghost" data-action="edit-set" data-key="${esc(g.key)}">編集</button>
+    </div>`;
+  }).join('')}</div>` : emptyState(q ? '一致するセットがありません。' : 'セット情報のあるカードがまだありません。カードにセットコードと番号を入れるか、AIでカード判定するとここに表示されます。');
 }
 
 // ---------- ほしいもの ----------
@@ -979,7 +1281,7 @@ function viewWish() {
     </div>
     ${list.length ? `<div class="wish-list">${list.map((c) => {
       const target = num(c.targetPrice);
-      const img = c.imageData || c.imageUrl;
+      const img = thumbOf(c);
       return `<div class="wish-row">
         <button class="wish-main" data-action="open-card" data-id="${c.id}">
           <span class="thumb">${img ? `<img src="${esc(img)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}</span>
@@ -1134,14 +1436,72 @@ function fld(label, name, value, type = 'text', extra = '') {
   return `<label class="fld"><span>${label}</span><input type="${type}" name="${name}" value="${esc(value)}" ${extra}></label>`;
 }
 
-function openCard(id, preset = {}) {
+// navIds: 前へ/次へで移動できるカードの並び（一覧から開いたときは絞り込み結果）
+async function openCard(id, preset = {}, navIds = null) {
   const base = id ? state.cards.find((c) => c.id === id) : newCard(preset);
   if (!base) return;
-  state.editing = structuredClone(base);
-  state.editing.cond = condOf(state.editing);
+  const c = structuredClone(base);
+  c.cond = condOf(c);
+  state.editing = c;
+  state.navIds = navIds || [];
+  state.editPhotos = await loadPhotos(c.cond.photos);
+  state.removedPhotos = new Set();
+  state.editingOrig = JSON.stringify(c);
   cardForm().innerHTML = '';
   renderCardForm();
-  cardDlg().showModal();
+  if (!cardDlg().open) cardDlg().showModal();
+}
+
+function editingChanged() {
+  syncForm();
+  return JSON.stringify(state.editing) !== state.editingOrig;
+}
+
+// 編集中のカードを保存する。保存したら true
+async function commitEditing() {
+  syncForm();
+  const c = state.editing;
+  if (!c.name) { toast('カード名を入力してください', 'error'); return false; }
+  const isNew = !state.cards.some((x) => x.id === c.id && !x.deleted);
+  // 同じセット・番号・鑑定のカードが登録済みなら枚数をまとめるか確認
+  if (isNew && c.status === 'owned' && c.number) {
+    const dup = live('owned').find((x) => setKey(x) === setKey(c) && x.number === c.number && (x.grade || '未鑑定') === (c.grade || '未鑑定'));
+    if (dup && confirm(`同じカード「${title(dup)}」（${[dup.setCode, dup.number, dup.grade !== '未鑑定' ? dup.grade : ''].filter(Boolean).join(' ')}）が登録済みです。\n\nOK：登録済みのカードの枚数を +${qty(c)} する\nキャンセル：別のカードとして登録する`)) {
+      const d = structuredClone(dup);
+      d.quantity = qty(d) + qty(c);
+      await saveCard(d);
+      toast(`「${title(d)}」を ${d.quantity}枚 にしました`, 'ok');
+      return true;
+    }
+  }
+  // 状態写真: 追加分を保存し、外した分は削除の墓標にする
+  const t = nowIso();
+  const persisted = new Set(state.cards.find((x) => x.id === c.id)?.cond?.photos || []);
+  const keep = new Set(c.cond.photos);
+  const put = c.cond.photos.filter((id) => !persisted.has(id)).map((id) => ({ id, cardId: c.id, data: state.editPhotos[id], updatedAt: t }));
+  const del = [...state.removedPhotos].filter((id) => persisted.has(id) && !keep.has(id)).map((id) => ({ id, deleted: true, updatedAt: t }));
+  if (put.length || del.length) await db.putMany('photos', [...put, ...del]);
+  await saveCard(c);
+  state.editingOrig = JSON.stringify(c);
+  return true;
+}
+
+// 前後のカードへ移動（変更があれば保存するか確認）
+async function goCard(delta) {
+  const ids = state.navIds;
+  const j = ids.indexOf(state.editing.id) + delta;
+  if (j < 0 || j >= ids.length) return;
+  if (editingChanged()) {
+    if (!confirm('変更を保存して移動しますか？\n（キャンセルするとこのカードに留まります）')) return;
+    if (!(await commitEditing())) return;
+    refreshView();
+  }
+  await openCard(ids[j], {}, ids);
+}
+
+function closeCard() {
+  if (editingChanged() && !confirm('保存していない変更があります。破棄して閉じますか？')) return;
+  cardDlg().close();
 }
 
 function renderCardForm() {
@@ -1150,9 +1510,17 @@ function renderCardForm() {
   const img = c.imageData || c.imageUrl;
   // 再描画してもスクロール位置を保つ
   const scroll = $('.dlg-body', cardForm())?.scrollTop || 0;
+  const pos = state.navIds.indexOf(c.id);
+  const nav = !isNew && pos >= 0 && state.navIds.length > 1
+    ? `<div class="nav-pos">
+        <button type="button" class="icon-btn" data-action="card-prev" ${pos <= 0 ? 'disabled' : ''} aria-label="前のカード（←キー）">‹</button>
+        <span class="small muted">${pos + 1} / ${state.navIds.length}</span>
+        <button type="button" class="icon-btn" data-action="card-next" ${pos >= state.navIds.length - 1 ? 'disabled' : ''} aria-label="次のカード（→キー）">›</button>
+      </div>` : '';
   cardForm().innerHTML = `
     <header class="dlg-head">
       <h2>${isNew ? (c.status === 'wish' ? 'ほしいものを追加' : 'カードを追加') : esc(title(c))}</h2>
+      ${nav}
       <button type="button" class="icon-btn" data-action="close-card" aria-label="閉じる">×</button>
     </header>
     <div class="dlg-body">
@@ -1189,6 +1557,8 @@ function renderCardForm() {
       ${isNew ? '' : '<button type="button" class="btn danger ghost" data-action="delete-card">削除</button>'}
       <span class="spacer"></span>
       <button type="button" class="btn ghost" data-action="close-card">キャンセル</button>
+      ${isNew ? '<button type="button" class="btn" data-action="save-continue" title="セット・購入先・購入日を引き継いで次の1枚を入力">保存して続けて追加</button>' : ''}
+      ${!isNew && pos >= 0 && pos < state.navIds.length - 1 ? '<button type="button" class="btn" data-action="save-next">保存して次へ</button>' : ''}
       <button type="submit" class="btn primary">保存</button>
     </footer>`;
   const body = $('.dlg-body', cardForm());
@@ -1234,7 +1604,7 @@ function condSectionHtml(c) {
 
         <h4>状態の写真</h4>
         <div class="cond-photos">
-          ${cond.photos.map((ph, i) => `<div class="cphoto"><button type="button" class="cphoto-img" data-action="view-photo" data-idx="${i}" aria-label="写真${i + 1}を拡大"><img src="${esc(ph)}" alt=""></button>
+          ${cond.photos.map((id, i) => `<div class="cphoto"><button type="button" class="cphoto-img" data-action="view-photo" data-idx="${i}" aria-label="写真${i + 1}を拡大"><img src="${esc(state.editPhotos[id] || '')}" alt=""></button>
             <button type="button" class="icon-btn del" data-action="del-photo" data-idx="${i}" aria-label="写真${i + 1}を削除">×</button></div>`).join('')}
           ${cond.photos.length < 8 ? '<label class="cphoto add">＋ 写真を追加<input type="file" accept="image/*" multiple data-change="add-photos" hidden></label>' : ''}
         </div>
@@ -1357,12 +1727,39 @@ async function saveSet() {
 // ================= イベント =================
 
 const actions = {
-  nav: (el) => { state.view = el.dataset.view; render(); window.scrollTo(0, 0); },
+  nav: (el) => {
+    state.view = el.dataset.view;
+    state.selectMode = false;
+    state.selected.clear();
+    render();
+    window.scrollTo(0, 0);
+  },
   'sync-now': () => syncNow(),
   'new-card': (el) => openCard(null, el.dataset.status ? { status: el.dataset.status, purchaseDate: '' } : {}),
-  'open-card': (el) => openCard(el.dataset.id),
-  'close-card': () => cardDlg().close(),
-  'clear-image': () => { syncForm(); state.editing.imageData = ''; state.editing.imageUrl = ''; renderCardForm(); },
+  'open-card': (el) => {
+    const inResults = !!el.closest('#results');
+    if (inResults && state.selectMode) { toggleSelected(el); return; }
+    return openCard(el.dataset.id, {}, inResults ? state.resultIds : null);
+  },
+  'close-card': () => closeCard(),
+  'card-prev': () => goCard(-1),
+  'card-next': () => goCard(1),
+  'save-next': async () => {
+    if (!(await commitEditing())) return;
+    refreshView();
+    toast('保存しました', 'ok');
+    await goCard(1);
+  },
+  'save-continue': async () => {
+    const c = state.editing;
+    if (!(await commitEditing())) return;
+    refreshView();
+    // 同じセットの続きを入力しやすいよう、共通しそうな項目を引き継ぐ
+    await openCard(null, { status: c.status, setCode: c.setCode, setName: c.setName, shop: c.shop, purchaseDate: c.purchaseDate, rarity: '' });
+    toast('保存しました。続けて入力できます', 'ok');
+    $('#card-form [name="name"]')?.focus();
+  },
+  'clear-image': () => { syncForm(); state.editing.imageData = ''; state.editing.imageUrl = ''; state.editing.thumb = ''; renderCardForm(); },
   'ai-identify': (el) => aiIdentifyEditing(el),
   'cond-today': () => { syncForm(); state.editing.cond.inspectedAt = today(); renderCardForm(); },
   'toggle-wh': (el) => {
@@ -1377,34 +1774,64 @@ const actions = {
   'del-photo': (el) => {
     if (!confirm('この写真を削除しますか？')) return;
     syncForm();
-    state.editing.cond.photos.splice(Number(el.dataset.idx), 1);
+    const [id] = state.editing.cond.photos.splice(Number(el.dataset.idx), 1);
+    state.removedPhotos.add(id);
     renderCardForm();
   },
   'view-photo': (el) => {
-    $('#photo-view').src = state.editing.cond.photos[Number(el.dataset.idx)];
+    $('#photo-view').src = state.editPhotos[state.editing.cond.photos[Number(el.dataset.idx)]] || '';
     $('#photo-dialog').showModal();
   },
   'close-photo': () => $('#photo-dialog').close(),
   'delete-card': async () => {
     if (!confirm(`「${title(state.editing)}」を削除しますか？`)) return;
-    await deleteCard(state.editing.id);
+    await deleteCards([state.editing.id]);
     cardDlg().close();
-    render();
+    refreshView();
   },
   'got-wish': async (el) => {
-    const c = structuredClone(state.cards.find((x) => x.id === el.dataset.id));
+    await openCard(el.dataset.id);
+    const c = state.editing;
     c.status = 'owned';
     c.purchaseDate = today();
     c.purchasePrice = c.targetPrice || '';
-    state.editing = c;
     renderCardForm();
-    cardDlg().showModal();
     toast('購入価格と購入日を確認して保存してください');
   },
-  layout: (el) => { state.filters.layout = el.dataset.layout; render(); },
-  'clear-filters': () => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: '' }); render(); },
-  'filter-set': (el) => { Object.assign(state.filters, { q: '', set: el.dataset.key, rarity: '', grade: '', tag: '', cond: '', sort: 'number' }); state.view = 'collection'; render(); },
-  'filter-cond': (el) => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: el.dataset.cond }); state.view = 'collection'; render(); },
+  layout: (el) => { state.filters.layout = el.dataset.layout; saveUi(); render(); },
+  density: (el) => { state.filters.density = el.dataset.density; saveUi(); render(); },
+  'toggle-filters': (el) => {
+    state.filtersOpen = !state.filtersOpen;
+    $('#filter-panel').hidden = !state.filtersOpen;
+    el.classList.toggle('on', state.filtersOpen);
+    el.setAttribute('aria-expanded', String(state.filtersOpen));
+    saveUi();
+  },
+  'remove-filter': (el) => { state.filters[el.dataset.key] = ''; saveUi(); render(); },
+  'clear-filters': () => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: '' }); saveUi(); render(); },
+  'sort-by': (el) => {
+    // 列見出しのクリック: 同じ列なら昇順/降順を切り替え
+    const keys = el.dataset.sorts.split(',');
+    const i = keys.indexOf(state.filters.sort);
+    state.filters.sort = keys[i >= 0 ? (i + 1) % keys.length : 0];
+    saveUi();
+    render();
+  },
+  'filter-set': (el) => { Object.assign(state.filters, { q: '', set: el.dataset.key, rarity: '', grade: '', tag: '', cond: '', sort: 'number' }); saveUi(); state.view = 'collection'; render(); window.scrollTo(0, 0); },
+  'filter-cond': (el) => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: el.dataset.cond }); saveUi(); state.view = 'collection'; render(); window.scrollTo(0, 0); },
+  'toggle-select': () => { state.selectMode = !state.selectMode; state.selected.clear(); render(); },
+  'select-all': () => { state.resultIds.forEach((id) => state.selected.add(id)); refreshView(); },
+  'select-none': () => { state.selected.clear(); refreshView(); },
+  'bulk-edit': () => openBulk(),
+  'close-bulk': () => $('#bulk-dialog').close(),
+  'bulk-delete': async () => {
+    const n = state.selected.size;
+    if (!confirm(`選択した${n}件のカードを削除しますか？`)) return;
+    await deleteCards([...state.selected]);
+    state.selected.clear();
+    toast(`${n}件を削除しました`);
+    refreshView();
+  },
   'new-set': () => openSet(null),
   'edit-set': (el) => openSet(el.dataset.key),
   'close-set': () => $('#set-dialog').close(),
@@ -1434,7 +1861,7 @@ const actions = {
   wipe: async () => {
     if (!confirm('この端末のカード・セット・取込履歴をすべて削除します。バックアップは削除されません。よろしいですか？')) return;
     if (prompt('確認のため「削除」と入力してください') !== '削除') return;
-    await Promise.all([db.clear('cards'), db.clear('sets'), db.clear('meta')]);
+    await Promise.all([db.clear('cards'), db.clear('sets'), db.clear('meta'), db.clear('photos')]);
     Object.assign(state, { cards: [], sets: [], processed: new Set(), candidates: [], localHandle: null, dirty: false });
     render();
     toast('すべて削除しました');
@@ -1447,6 +1874,7 @@ const changeActions = {
     if (!file) return;
     syncForm();
     state.editing.imageData = await resizeImage(file);
+    state.editing.thumb = await makeThumb(state.editing.imageData);
     renderCardForm();
   },
   'add-photos': async (el) => {
@@ -1454,7 +1882,11 @@ const changeActions = {
     if (!files.length) return;
     syncForm();
     const room = 8 - state.editing.cond.photos.length;
-    for (const f of files.slice(0, room)) state.editing.cond.photos.push(await resizeImage(f, 1200));
+    for (const f of files.slice(0, room)) {
+      const id = crypto.randomUUID();
+      state.editPhotos[id] = await resizeImage(f, 1200);
+      state.editing.cond.photos.push(id);
+    }
     if (files.length > room) toast('状態の写真は1枚のカードにつき8枚までです', 'error');
     renderCardForm();
   },
@@ -1485,9 +1917,22 @@ document.addEventListener('click', (e) => {
   if (fn) { e.preventDefault(); guard(fn)(el, e); }
 });
 
+const isTyping = (el) => el?.matches?.('input, textarea, select, [contenteditable="true"]');
+
 document.addEventListener('keydown', (e) => {
   // テーブル行のキーボード操作
   if (e.key === 'Enter' && e.target.matches('tr[data-action]')) e.target.click();
+  // カード詳細: ←/→ で前後のカードへ
+  if (cardDlg().open && !isTyping(e.target) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && state.navIds.length > 1) {
+    e.preventDefault();
+    guard(goCard)(e.key === 'ArrowLeft' ? -1 : 1);
+    return;
+  }
+  // 「/」で検索欄へ
+  if (e.key === '/' && !isTyping(e.target) && !document.querySelector('dialog[open]')) {
+    const search = $('#col-search') || $('[data-filter="setQ"]') || $('[data-filter="wishQ"]');
+    if (search) { e.preventDefault(); search.focus(); search.select(); }
+  }
   // SVG の白かけ位置はキーボードでも切り替え可能に
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('g[data-action]')) { e.preventDefault(); guard(actions['toggle-wh'])(e.target); }
 });
@@ -1510,11 +1955,15 @@ document.addEventListener('change', (e) => {
     saveSettings();
     return;
   }
-  if (el.dataset.filter && el.dataset.filter !== 'q' && el.dataset.filter !== 'wishQ') {
-    state.filters[el.dataset.filter] = el.value;
+  if (el.dataset.filter === 'setSort') { state.setSort = el.value; saveUi(); renderSetList(); return; }
+  if (el.dataset.filter && !['q', 'wishQ', 'setQ'].includes(el.dataset.filter)) {
+    state.filters[el.dataset.filter] = el.type === 'checkbox' ? el.checked : el.value;
+    saveUi();
     renderResults();
   }
 });
+
+let searchTimer = null;
 
 document.addEventListener('input', (e) => {
   const el = e.target;
@@ -1524,7 +1973,13 @@ document.addEventListener('input', (e) => {
     $(`#cent-${side}`).innerHTML = centResultHtml(side, v);
     return;
   }
-  if (el.dataset.filter === 'q') { state.filters.q = el.value; renderResults(); }
+  if (el.dataset.filter === 'q') {
+    // 入力のたびに1000件を描き直さないよう少し待つ
+    state.filters.q = el.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => renderResults(), 180);
+  }
+  if (el.dataset.filter === 'setQ') { state.setQ = el.value; renderSetList(); }
   if (el.dataset.filter === 'wishQ') {
     state.wishQ = el.value;
     const pos = el.selectionStart;
@@ -1543,14 +1998,16 @@ document.addEventListener('error', (e) => { if (e.target.tagName === 'IMG') e.ta
 async function init() {
   $('#card-form').addEventListener('submit', guard(async (e) => {
     e.preventDefault();
-    syncForm();
-    const c = state.editing;
-    if (!c.name) { toast('カード名を入力してください', 'error'); return; }
-    await saveCard(c);
+    if (!(await commitEditing())) return;
     cardDlg().close();
-    render();
+    refreshView();
     toast('保存しました', 'ok');
   }));
+  // Esc で閉じるときも未保存の変更を確認
+  cardDlg().addEventListener('cancel', (e) => {
+    if (editingChanged() && !confirm('保存していない変更があります。破棄して閉じますか？')) e.preventDefault();
+  });
+  $('#bulk-form').addEventListener('submit', guard(async (e) => { e.preventDefault(); await applyBulk(); }));
   $('#set-form').addEventListener('submit', guard(async (e) => { e.preventDefault(); await saveSet(); }));
 
   // 入力候補
@@ -1572,6 +2029,18 @@ async function init() {
   state.processed = new Set(processed?.ids || []);
   state.localHandle = handle?.handle || null;
   render();
+  // 旧形式データの移行（写真の分離・サムネイル作成）は表示後に行う
+  if (await migrateCards()) refreshView();
+  // 一覧のツールバーをヘッダー（PC ではメニューも）の下に固定する位置
+  const stickyTop = () => {
+    const nav = $('#nav');
+    const navH = getComputedStyle(nav).position === 'sticky' ? nav.offsetHeight : 0;
+    document.documentElement.style.setProperty('--sticky-top', `${$('.app-head').offsetHeight + navH}px`);
+  };
+  stickyTop();
+  window.addEventListener('resize', stickyTop);
+  // 画面を離れるときは待たずに自動バックアップ
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') autoBackup(); });
 
   if (state.settings.clientId) G.loadGis().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol === 'https:') {

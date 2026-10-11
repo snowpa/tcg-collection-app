@@ -1,6 +1,6 @@
 // IndexedDB の薄いラッパー（外部ライブラリなし）
 const DB_NAME = 'tcg-collection';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 let dbPromise = null;
 
 function open() {
@@ -13,6 +13,8 @@ function open() {
         if (!d.objectStoreNames.contains('cards')) d.createObjectStore('cards', { keyPath: 'id' });
         if (!d.objectStoreNames.contains('sets')) d.createObjectStore('sets', { keyPath: 'id' });
         if (!d.objectStoreNames.contains('meta')) d.createObjectStore('meta', { keyPath: 'key' });
+        // photos: 状態写真（容量が大きいのでカード本体とは分けて保存し、必要なときだけ読む）
+        if (!d.objectStoreNames.contains('photos')) d.createObjectStore('photos', { keyPath: 'id' });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);

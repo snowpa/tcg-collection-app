@@ -1,5 +1,5 @@
 // オフライン用 Service Worker（ネットワーク優先・失敗時にキャッシュ）
-const CACHE = 'tcg-collection-v2';
+const CACHE = 'tcg-collection-v3';
 const ASSETS = [
   './', './index.html', './style.css', './manifest.json', './icon.svg',
   './js/app.js', './js/db.js', './js/google.js', './js/parser.js', './js/gemini.js', './js/chart.js',

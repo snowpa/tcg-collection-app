@@ -146,26 +146,28 @@ async function findBackupFile(token) {
   return j.files?.[0] || null;
 }
 
+// 写真を含むと数十MBになるため、5MB 制限のない resumable upload で保存する
 export async function driveSave(token, data) {
-  const content = JSON.stringify(data);
+  const content = new Blob([JSON.stringify(data)], { type: 'application/json' });
   const file = await findBackupFile(token);
-  if (file) {
-    const res = await gfetch(`https://www.googleapis.com/upload/drive/v3/files/${file.id}?uploadType=media&fields=id,modifiedTime`, token, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: content,
-    });
-    return res.json();
-  }
-  const boundary = 'tcg' + Date.now();
-  const meta = { name: BACKUP_FILE_NAME, mimeType: 'application/json' };
-  const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n`
-    + `--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
-  const res = await gfetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime', token, {
-    method: 'POST',
-    headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
-    body,
+  const url = file
+    ? `https://www.googleapis.com/upload/drive/v3/files/${file.id}?uploadType=resumable&fields=id,modifiedTime`
+    : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,modifiedTime';
+  // 1. アップロードセッションを開始
+  const init = await gfetch(url, token, {
+    method: file ? 'PATCH' : 'POST',
+    headers: {
+      'Content-Type': 'application/json; charset=UTF-8',
+      'X-Upload-Content-Type': 'application/json',
+      'X-Upload-Content-Length': String(content.size),
+    },
+    body: JSON.stringify(file ? {} : { name: BACKUP_FILE_NAME, mimeType: 'application/json' }),
   });
+  const session = init.headers.get('Location');
+  if (!session) throw new Error('Googleドライブのアップロードを開始できませんでした');
+  // 2. 本体を送信（セッションURLは認証不要）
+  const res = await fetch(session, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: content });
+  if (!res.ok) throw new Error(`Googleドライブへの保存に失敗しました (${res.status})`);
   return res.json();
 }
 
