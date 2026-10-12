@@ -42,6 +42,9 @@ export async function imageDataUrl(imageUrl) {
   return `data:${r.mimeType};base64,${r.base64}`;
 }
 
+// 晴れる屋2を検索する（カードラッシュで見つからないときの予備。拡張機能 v1.2.0 以上）
+export const h2Search = (q) => call({ action: 'h2search', q }, 60000);
+
 // ボット確認が出たときにカードラッシュをタブで開く
 export const openSite = () => call({ action: 'open' });
 

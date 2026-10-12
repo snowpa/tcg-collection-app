@@ -18,6 +18,7 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
 
 async function handle(msg) {
   if (msg.action === 'search') return search(String(msg.q || ''), Number(msg.page || 1));
+  if (msg.action === 'h2search') return h2Search(String(msg.q || ''));
   if (msg.action === 'image') return image(String(msg.path || ''));
   if (msg.action === 'open') {
     // ボット確認画面が出たとき用に、カードラッシュをタブで開く
@@ -119,4 +120,72 @@ function crText(s) {
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// ---------- 晴れる屋2（カードラッシュで見つからないときの予備） ----------
+// アクセス回数の制限が厳しいため、問い合わせは最低3秒あけて1件ずつ行い、結果は6時間キャッシュする
+const H2_BASE = 'https://www.hareruya2.com';
+const H2_INTERVAL_MS = 3000;
+let h2Chain = Promise.resolve();
+let h2Last = 0;
+
+function h2Search(q) {
+  q = q.trim();
+  if (!q) return Promise.resolve({ items: [], total: 0 });
+  const key = `h2|${q}`;
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < CACHE_MS) return Promise.resolve(hit.data);
+  const run = h2Chain.then(async () => {
+    const waitMs = h2Last + H2_INTERVAL_MS - Date.now();
+    if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+    h2Last = Date.now();
+    const url = `${H2_BASE}/search?q=${encodeURIComponent(q).replace(/%20/g, '+')}&type=product`;
+    const res = await fetch(url, { credentials: 'include' });
+    if (res.status === 429) throw new Error('晴れる屋2のアクセス制限中です。しばらく（数分）待ってから相場を取り直してください。');
+    if (!res.ok) throw new Error(`晴れる屋2へのアクセスに失敗しました（HTTP ${res.status}）`);
+    const data = parseHareruya2List(await res.text());
+    cache.set(key, { at: Date.now(), data });
+    return data;
+  });
+  h2Chain = run.catch(() => {}); // 失敗しても次の問い合わせは続ける
+  return run;
+}
+
+// 検索結果ページから商品を読み取り、カードラッシュと同じ形（名前〔状態〕(版)【レアリティ】{番号}）に変換する
+function parseHareruya2List(html) {
+  const items = [];
+  for (const block of html.split('<li class="grid__item"').slice(1)) {
+    const id = (block.match(/id="title--(\d+)"/) || [])[1];
+    const title = crText((block.match(/id="title--\d+"\s*>([\s\S]*?)<\/h3>/) || [])[1] || '');
+    if (!id || !title) continue;
+    const price = Number(((block.match(/class="figure">\s*[¥￥]?\s*([\d,]+)/) || [])[1] || '0').replace(/,/g, ''));
+    const inv = crText((block.match(/class="product__inventory">([\s\S]*?)<\/div>/) || [])[1] || '');
+    const stock = Number((inv.match(/(\d+)/) || [])[1] || 0);
+    const img = (block.match(/\ssrc="([^"]+\/cdn\/shop\/[^"]+)"/) || [])[1] || '';
+    const thumb = img ? (img.startsWith('//') ? `https:${img}` : img) : '';
+    items.push({ ...hareruya2Name(title), id: `h2-${id}`, title, url: `${H2_BASE}/products/${id}`, price, stock, thumb, image: thumb.replace(/&width=\d+/, ''), source: 'hareruya2', soldOut: !stock });
+    if (items.length >= 100) break;
+  }
+  return { items, total: items.length, page: 1 };
+}
+
+// 「【PSA10】マリィ(SR){サポート}〈198/190〉[S4a]」→ { name: '〔PSA10鑑定済〕マリィ【SR】{198/190}', model: 'S4a' }
+function hareruya2Name(title) {
+  let t = title.trim();
+  let rank = '';
+  let variant = '';
+  const pre = t.match(/^【([^】]*)】\s*/);
+  if (pre) { rank = pre[1]; t = t.slice(pre[0].length); }
+  const model = ((t.match(/\[([^\]]*)\]\s*$/) || [])[1] || '').trim();
+  t = t.replace(/\[[^\]]*\]\s*$/, '');
+  const number = ((t.match(/〈([^〉]*)〉/) || [])[1] || '').trim();
+  t = t.replace(/〈[^〉]*〉/, '').replace(/\{[^}]*\}/, '').trim();
+  let rarity = '';
+  const rm = t.match(/\(([^()]*)\)\s*$/);
+  if (rm) { rarity = rm[1].trim(); t = t.slice(0, rm.index).trim(); }
+  const vm = t.match(/^(.*?)[:：](.+)$/); // 「マリィのプライド:SR仕様」→ マリィのプライド(SR仕様)
+  if (vm) { t = vm[1].trim(); variant = vm[2].trim(); }
+  if (/未開封/.test(rank)) { variant = [variant, '未開封'].filter(Boolean).join('/'); rank = ''; }
+  const label = rank && /(PSA|BGS|ARS|CGC|PCG|ACE)\s*[\d.]+/i.test(rank) && !/鑑定/.test(rank) ? `${rank}鑑定済` : rank;
+  return { name: `${label ? `〔${label}〕` : ''}${t}${variant ? `(${variant})` : ''}【${rarity || '-'}】{${number}}`, model };
 }

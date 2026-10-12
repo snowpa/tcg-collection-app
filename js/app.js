@@ -182,6 +182,7 @@ function marketResult(c) {
   if (hit && hit.key === key && hit.m === m) return hit.r;
   let r = MK.priceFromQuotes(m.quotes, { grade: c.grade, rating: ratingOf(c), psaPos: state.settings.psaPos });
   if (!r.error && m.note) r = { ...r, basis: `${r.basis}（${m.note}）`, estimated: true };
+  if (!r.error && m.source === 'hareruya2') r = { ...r, basis: `${r.basis}（晴れる屋2の販売価格）` };
   marketCache.set(c, { key, m, r });
   return r;
 }
@@ -988,7 +989,7 @@ function viewDashboard() {
   return `
     ${backupNotice()}
     <section class="stats">
-      <div class="stat big"><span class="label">相場総額（カードラッシュ販売価格）</span>
+      <div class="stat big"><span class="label">相場総額（販売価格ベース）</span>
         <span class="val">${priced.length ? yen(market) : '-'}</span>
         <span class="small">${priced.length
           ? `${priced.length} / ${owned.length}種類で算出 ・ 同じカードの購入額 ${yen(pricedCost)}（<span class="${market - pricedCost >= 0 ? 'up' : 'down'}">${market - pricedCost >= 0 ? '+' : ''}${yen(market - pricedCost)}</span>）`
@@ -1011,12 +1012,12 @@ function viewDashboard() {
         : '<p class="muted small">折れ・へこみ、目立つ白かけなどがあるカードがここに表示されます。</p>'}</section>
     </div>
     <section class="panel">
-      <div class="panel-head"><h2>相場（カードラッシュ販売価格）</h2>
+      <div class="panel-head"><h2>相場（販売価格ベース）</h2>
         <div class="row" style="margin:0">
           <button class="btn small" data-action="market-all">相場を更新</button>
           <button class="btn small ghost" data-action="market-all" data-force="1" title="24時間以内に取得済みのカードも取り直す">すべて取り直す</button>
         </div></div>
-      <p class="muted small">カードラッシュから同じカードの状態別・鑑定別の販売価格をまとめて取得しておき、手持ちの状態に合わせてアプリ内で相場を計算します（状態や鑑定を変えても取り直しは不要）。鑑定品ではないカードは総合評価 S・A＝通常（無印）、B＝状態A-、C＝状態B、D＝状態C の販売価格（未評価は欠陥チェックから判断）。PSA 鑑定品は PSA10 の価格 × グレード別の割合です。該当する商品がなく換算・割合で計算した相場には「推定」が付きます。
+      <p class="muted small">カードラッシュ（見つからないときは晴れる屋2）から同じカードの状態別・鑑定別の販売価格をまとめて取得しておき、手持ちの状態に合わせてアプリ内で相場を計算します（状態や鑑定を変えても取り直しは不要）。鑑定品ではないカードは総合評価 S・A＝通常（無印）、B＝状態A-、C＝状態B、D＝状態C の販売価格（未評価は欠陥チェックから判断）。PSA 鑑定品は PSA10 の価格 × グレード別の割合です。該当する商品がなく換算・割合で計算した相場には「推定」が付きます。
         ${lastAt ? `最終更新 ${esc(new Date(lastAt).toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' }))}。` : ''}
         ${failed ? `<button class="link" data-action="filter-cond" data-cond="market-error">取得できなかったカード ${failed}件</button>（カードラッシュで照合して番号・型番を入れると取得できます）` : ''}</p>
       ${topMarket.length ? `<ol class="rank">${topMarket.map((c) => `<li><button class="rank-row" data-action="open-card" data-id="${c.id}">
@@ -1633,7 +1634,7 @@ async function goCard(delta) {
 const MARKET_FRESH_MS = 24 * 60 * 60 * 1000;
 
 // 価格一覧の取得（取り直し）が必要か: 未取得・旧形式・カード自体の変更・24時間経過
-const marketNeedsFetch = (c) => !c.market?.at || (!c.market.quotes && !c.market.error)
+const marketNeedsFetch = (c) => !c.market?.at || (!c.market.quotes && !c.market.error) || c.market.retry
   || c.market.sig !== marketSig(c) || Date.now() - new Date(c.market.at).getTime() > MARKET_FRESH_MS;
 const verNum = (v) => String(v || '0').split('.').reduce((a, x) => a * 1000 + Number(x || 0), 0);
 
@@ -1646,7 +1647,8 @@ async function fetchMarket(c) {
   const base = { sig: marketSig(c), at: nowIso() };
   if (!c.name) return { ...base, error: 'カード名がありません' };
   let last = { error: '検索結果がありません' };
-  for (const q of CR.queryCandidates(c.name, c.number).slice(0, 3)) {
+  const queries = CR.queryCandidates(c.name, c.number);
+  for (const q of queries.slice(0, 3)) {
     const r = await CR.search(q);
     if (r.items.length && !('price' in r.items[0])) {
       throw new Error('カードラッシュ連携の拡張機能が古いため価格を取得できません。chrome://extensions で拡張機能を更新してください');
@@ -1656,7 +1658,26 @@ async function fetchMarket(c) {
     last = m;
     if (/特定できません/.test(m.error)) break; // より短い検索語では同名カードがさらに混ざる
   }
-  return { ...base, error: last.error };
+  // カードラッシュで見つからない → 晴れる屋2で1回だけ探す
+  const h2 = await fetchHareruya2(target, queries[0]);
+  if (h2.quotes) return { ...base, quotes: h2.quotes, source: 'hareruya2', ...(h2.note ? { note: h2.note } : {}) };
+  return { ...base, error: `${last.error}${h2.reason ? `。晴れる屋2: ${h2.reason}` : ''}`, ...(h2.retry ? { retry: true } : {}) };
+}
+
+// 晴れる屋2はアクセス制限が厳しいので、制限にかかったら5分間は問い合わせない
+let h2PauseUntil = 0;
+async function fetchHareruya2(target, q) {
+  if (!q) return { reason: '' };
+  if (Date.now() < h2PauseUntil) return { reason: 'アクセス制限中のため次回の更新で確認します', retry: true };
+  if (verNum(await CR.ping()) < verNum('1.2.0')) return { reason: '拡張機能を v1.2.0 以上に更新すると探せます', retry: true };
+  try {
+    const r = await CR.h2Search(q);
+    const m = MK.matchQuotes(target, r.items);
+    return m.error ? { reason: m.error } : m;
+  } catch (e) {
+    if (/アクセス制限/.test(e.message)) h2PauseUntil = Date.now() + 5 * 60 * 1000;
+    return { reason: e.message, retry: true };
+  }
 }
 
 async function updateMarket(cards, { force = false } = {}) {
@@ -1770,7 +1791,7 @@ function marketSectionHtml(c) {
   const err = marketError(c);
   return `
       <section class="sub" id="market-sec">
-        <div class="panel-head"><h3>相場（カードラッシュ販売価格）</h3>
+        <div class="panel-head"><h3>相場（販売価格ベース）</h3>
           <button type="button" class="btn small" data-action="market-one">${m ? '相場を取り直す' : '相場を取得'}</button></div>
         ${!m ? '<p class="muted small">未取得です。カードラッシュから状態別・鑑定別の販売価格を取得し、状態評価・鑑定・未開封に合わせて相場を計算します。</p>'
           : err ? `<p class="notice small">${m.error ? '取得できませんでした' : '相場を計算できません'}: ${esc(err)}</p>`

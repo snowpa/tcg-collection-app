@@ -150,6 +150,7 @@ export function matchQuotes(target, items) {
   // 保存は必要な項目だけ（k: normal=無印 / cond=状態ランク / graded=鑑定品）
   const quotes = list.filter((x) => x.r.kind !== 'other').map((x) => ({
     id: x.it.id, n: x.it.name, p: x.it.price, s: x.it.stock || 0, k: x.r.kind,
+    ...(x.it.source ? { u: x.it.url, t: x.it.title } : {}), // カードラッシュ以外（晴れる屋2）は商品URLと元の商品名も保存
     ...(x.r.kind === 'cond' ? { r: x.r.rank } : {}),
     ...(x.r.kind === 'graded' ? { g: x.r.grade, d: x.r.damaged } : {}),
   }));
@@ -166,7 +167,7 @@ export function matchQuotes(target, items) {
 export function priceFromQuotes(quotes, target) {
   // 在庫ありを優先し、その中で最安
   const best = (xs) => [...xs].sort((a, b) => (b.s > 0) - (a.s > 0) || a.p - b.p)[0];
-  const out = (q, price, basis, estimated = false) => ({ price, basis, estimated, itemId: q.id, url: CR_PRODUCT + q.id, listing: q.n });
+  const out = (q, price, basis, estimated = false) => ({ price, basis, estimated, itemId: q.id, url: q.u || CR_PRODUCT + q.id, listing: q.t || q.n });
   const yenStr = (n) => `${n.toLocaleString('ja-JP')}円`;
 
   const grade = normGrade(target.grade);
