@@ -7,6 +7,9 @@ import { lineChart } from './chart.js';
 import * as CR from './cardrush.js';
 import * as MK from './market.js';
 
+// アプリの版（sw.js の CACHE と合わせて更新する。不具合の問い合わせ時に確認用）
+const APP_VERSION = 'v29';
+
 // ================= 共通ユーティリティ =================
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -1588,6 +1591,7 @@ function viewSettings() {
       <h2>データ</h2>
       <p class="muted small">カード ${live().length}件 ・ 取込済みメール ${state.processed.size}件</p>
       <button class="btn danger" data-action="wipe">この端末のデータをすべて削除</button>
+      <p class="muted small">アプリの版: ${esc(APP_VERSION)}</p>
     </section>`;
 }
 
