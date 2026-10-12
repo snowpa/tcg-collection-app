@@ -108,15 +108,15 @@ export function matchQuotes(target, items) {
   const fail = step((x) => normName(x.base) === normName(own.base),
     (xs) => `カード名「${own.base}」と同じ名前の商品が見つかりません${xs.length ? `（検索結果の例: ${uniq(xs.map((x) => x.base))}）` : ''}`)
     || step((x) => !target.number || norm(x.p.number) === norm(target.number),
-      (xs) => `番号「${target.number}」の商品が見つかりません（カードラッシュにある番号: ${uniq(xs.map((x) => x.p.number))}）`)
+      (xs) => `番号「${target.number}」の商品が見つかりません（検索結果にある番号: ${uniq(xs.map((x) => x.p.number))}）`)
     // 型番が分かる商品のうち一致するものが1つもなければ、型番違い（鑑定品の「その他」だけで通さない）
     || step((x) => !target.setCode || knownModel(x.p.setCode) === norm(target.setCode)
         || (!knownModel(x.p.setCode) && !list.some((y) => knownModel(y.p.setCode) && knownModel(y.p.setCode) !== norm(target.setCode))),
-      (xs) => `型番「${target.setCode}」の商品が見つかりません（カードラッシュにある型番: ${uniq(xs.map((x) => knownModel(x.p.setCode) && x.p.setCode))}）`)
+      (xs) => `型番「${target.setCode}」の商品が見つかりません（検索結果にある型番: ${uniq(xs.map((x) => knownModel(x.p.setCode) && x.p.setCode))}）`)
     || step((x) => !x.tokens.some((t) => LANG.test(t)) || LANG.test(hint),
       () => '海外版の商品しか見つかりません')
     || step(rarityOk,
-      (xs) => `レアリティ「${target.rarity}」の商品が見つかりません（カードラッシュにあるレアリティ: ${uniq(xs.map((x) => x.p.rarity || x.tokens.find(isRarityTok)))}）`);
+      (xs) => `レアリティ「${target.rarity}」の商品が見つかりません（検索結果にあるレアリティ: ${uniq(xs.map((x) => x.p.rarity || x.tokens.find(isRarityTok)))}）`);
   if (fail) return { error: fail };
   // 未開封かどうかは一致するものを優先し、なければもう一方の価格で代用する
   const sameSeal = list.filter((x) => !!x.p.sealed === !!target.sealed);
@@ -167,7 +167,10 @@ export function matchQuotes(target, items) {
 export function priceFromQuotes(quotes, target) {
   // 在庫ありを優先し、その中で最安
   const best = (xs) => [...xs].sort((a, b) => (b.s > 0) - (a.s > 0) || a.p - b.p)[0];
-  const out = (q, price, basis, estimated = false) => ({ price, basis, estimated, itemId: q.id, url: q.u || CR_PRODUCT + q.id, listing: q.t || q.n });
+  // 晴れる屋2の商品（u を持つ）を使ったときは根拠に出典を付ける
+  const out = (q, price, basis, estimated = false) => ({
+    price, basis: q.u ? `${basis}（晴れる屋2の販売価格）` : basis, estimated, itemId: q.id, url: q.u || CR_PRODUCT + q.id, listing: q.t || q.n,
+  });
   const yenStr = (n) => `${n.toLocaleString('ja-JP')}円`;
 
   const grade = normGrade(target.grade);

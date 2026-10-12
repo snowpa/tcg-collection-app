@@ -182,7 +182,6 @@ function marketResult(c) {
   if (hit && hit.key === key && hit.m === m) return hit.r;
   let r = MK.priceFromQuotes(m.quotes, { grade: c.grade, rating: ratingOf(c), psaPos: state.settings.psaPos });
   if (!r.error && m.note) r = { ...r, basis: `${r.basis}（${m.note}）`, estimated: true };
-  if (!r.error && m.source === 'hareruya2') r = { ...r, basis: `${r.basis}（晴れる屋2の販売価格）` };
   marketCache.set(c, { key, m, r });
   return r;
 }
@@ -1654,7 +1653,13 @@ async function fetchMarket(c) {
       throw new Error('カードラッシュ連携の拡張機能が古いため価格を取得できません。chrome://extensions で拡張機能を更新してください');
     }
     const m = MK.matchQuotes(target, r.items);
-    if (!m.error) return { ...base, quotes: m.quotes, ...(m.note ? { note: m.note } : {}) };
+    if (!m.error) {
+      // 同じカードは見つかったが、今の状態・鑑定に合う価格がない（鑑定品しか売っていない等）→ 晴れる屋2の価格も合わせる
+      const test = MK.priceFromQuotes(m.quotes, { grade: c.grade, rating: ratingOf(c), psaPos: state.settings.psaPos });
+      if (!test.error) return { ...base, quotes: m.quotes, ...(m.note ? { note: m.note } : {}) };
+      const h2more = await fetchHareruya2(target, queries[0]);
+      return { ...base, quotes: [...m.quotes, ...(h2more.quotes || [])], ...(m.note ? { note: m.note } : {}), ...(h2more.retry ? { retry: true } : {}) };
+    }
     last = m;
     if (/特定できません/.test(m.error)) break; // より短い検索語では同名カードがさらに混ざる
   }
