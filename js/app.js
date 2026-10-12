@@ -1673,7 +1673,7 @@ async function fetchMarket(c) {
   let last = { error: '検索結果がありません' };
   // 未開封BOX・パックは商品名をそのまま使う（「ポケモンカード151」のような名前をノイズ除去で消さないため）
   const queries = isBox(c)
-    ? [...new Set([/未開封/.test(c.name) ? c.name : `${c.name} 未開封`, c.name])]
+    ? CR.boxQueries(c.name)
     : CR.queryCandidates(c.name, c.number);
   for (const q of queries.slice(0, 3)) {
     const r = await CR.search(q);
@@ -1961,7 +1961,7 @@ function openCrForEditing() {
   const c = state.editing;
   const pos = state.navIds.indexOf(c.id);
   openCrPicker({
-    queries: CR.queryCandidates(c.name && c.name !== c.rawTitle ? c.name : c.rawTitle || c.name, c.number),
+    queries: isBox(c) ? CR.boxQueries(c.name || c.rawTitle) : CR.queryCandidates(c.name && c.name !== c.rawTitle ? c.name : c.rawTitle || c.name, c.number),
     number: c.number,
     heading: state.crWalk && pos >= 0 ? `カードラッシュで照合（${pos + 1} / ${state.navIds.length}）` : 'カードラッシュから選ぶ',
     onPick: async (item) => {

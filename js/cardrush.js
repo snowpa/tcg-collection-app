@@ -84,6 +84,17 @@ export function queryFrom(text) {
 }
 
 /**
+ * 未開封BOX・パックの検索語。『』などの括弧があるとカードラッシュの検索で一致しないため空白に置き換え、
+ * 「全体 未開封」→「『』の中 未開封」→「全体」の順に試す
+ */
+export function boxQueries(name) {
+  const clean = String(name || '').replace(/[『』「」【】()（）［］[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+  const inner = (String(name || '').match(/[『「]([^』」]+)[』」]/) || [])[1];
+  const withSealed = (t) => (/未開封/.test(t) ? t : `${t} 未開封`);
+  return [...new Set([clean && withSealed(clean), inner && withSealed(inner.trim()), clean].filter(Boolean))];
+}
+
+/**
  * 自動検索で順に試す検索語。カードラッシュの検索は全語 AND なので、
  * 番号（例: 198/190）が分かれば「名前 番号」→「番号」、次に名前の語を減らしていく
  */
