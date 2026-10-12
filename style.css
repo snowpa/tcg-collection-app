@@ -454,3 +454,4 @@ td .gain { display: block; margin-left: 0; }
 .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+.market-log pre { white-space: pre-wrap; word-break: break-all; background: var(--surface2); padding: 8px; border-radius: 6px; font-size: .75rem; margin: 6px 0; user-select: all; }

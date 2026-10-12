@@ -8,7 +8,7 @@ import * as CR from './cardrush.js';
 import * as MK from './market.js';
 
 // アプリの版（sw.js の CACHE と合わせて更新する。不具合の問い合わせ時に確認用）
-const APP_VERSION = 'v29';
+const APP_VERSION = 'v30';
 
 // ================= 共通ユーティリティ =================
 
@@ -1705,8 +1705,12 @@ async function fetchMarket(c) {
     hint: [c.rawTitle, c.memo, c.condition].join(' '), // 1ED・ミラーなどの手がかり
     isBox: isBox(c), boxKind: isBox(c) ? c.boxKind || 'BOX' : '',
   };
-  const base = { sig: marketSig(c), at: nowIso() };
+  // どの検索語で何件見つかり、照合がどうなったかを残す（カード詳細の「取得の詳細」に表示）
+  const log = [`条件: 種類=${isBox(c) ? `BOX(${target.boxKind})` : 'カード'} 名前=${c.name} 番号=${c.number || '-'} 型番=${c.setCode || '-'} レアリティ=${c.rarity || '-'} 未開封=${c.sealed ? 'はい' : 'いいえ'}`];
+  const base = { sig: marketSig(c), at: nowIso(), log };
+  target.log = log;
   if (!c.name) return { ...base, error: 'カード名がありません' };
+  try { log.push(`拡張機能: v${await CR.ping()}`); } catch { /* ping は取得時にも確認される */ }
   let last = { error: '検索結果がありません' };
   // 未開封BOX・パックは商品名をそのまま使う（「ポケモンカード151」のような名前をノイズ除去で消さないため）
   const queries = isBox(c)
@@ -1718,6 +1722,7 @@ async function fetchMarket(c) {
       throw new Error('カードラッシュ連携の拡張機能が古いため価格を取得できません。chrome://extensions で拡張機能を更新してください');
     }
     const m = MK.matchQuotes(target, r.items);
+    log.push(`カードラッシュ「${q}」: ${r.items.length}件 → ${m.error || `一致 ${m.quotes.length}件`}`);
     if (!m.error) {
       // 同じカードは見つかったが、今の状態・鑑定に合う価格がない（鑑定品しか売っていない等）→ 晴れる屋2の価格も合わせる
       const test = MK.priceFromQuotes(m.quotes, { grade: c.grade, rating: ratingOf(c), psaPos: state.settings.psaPos });
@@ -1744,6 +1749,7 @@ async function fetchHareruya2(target, q) {
   try {
     const r = await CR.h2Search(q);
     const m = MK.matchQuotes(target, r.items);
+    target.log?.push(`晴れる屋2「${q}」: ${r.items.length}件 → ${m.error || `一致 ${m.quotes.length}件`}`);
     return m.error ? { reason: m.error } : m;
   } catch (e) {
     if (/アクセス制限/.test(e.message)) h2PauseUntil = Date.now() + 5 * 60 * 1000;
@@ -1872,6 +1878,7 @@ function marketSectionHtml(c) {
                ${marketCheck(c) ? `<p class="notice small">${esc(marketCheck(c))}。参照先の商品が手持ちのカードと同じか確認してください。違う場合は「🔎 カードラッシュから取得」で正しい商品を選び、相場を取り直してください。</p>` : ''}
                <p class="small">${esc(r.basis)}</p>
                <p class="muted small">参照: <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.listing)}</a>${m.quotes ? `（同じカードの販売 ${m.quotes.length}件から計算）` : ''}</p>`}
+        ${m?.log?.length ? `<details class="small market-log"><summary>取得の詳細</summary><pre>${esc(m.log.join(String.fromCharCode(10)))}</pre></details>` : ''}
         ${m ? `<p class="muted small">取得 ${esc(new Date(m.at).toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' }))}${stale ? ' ・ <strong>カード名・番号などが変わったため取り直してください</strong>' : m.quotes ? ' ・ 状態・鑑定を変えるとその場で再計算されます' : ' ・ <strong>古い形式のため取り直すと状態の変更に自動で追従します</strong>'}</p>` : ''}
       </section>`;
 }
