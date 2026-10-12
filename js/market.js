@@ -71,7 +71,8 @@ const CR_PRODUCT = 'https://www.cardrush-pokemon.jp/product/';
 
 /**
  * 【取得時に1回】検索結果から、手持ちのカードと同じ商品（状態・鑑定違いを含む）を集めて保存用の一覧にする
- * @param {{name:string, number?:string, setCode?:string, rarity?:string, sealed?:boolean, hint?:string}} target
+ * @param {{name:string, number?:string, setCode?:string, rarity?:string, sealed?:boolean, hint?:string, isBox?:boolean, boxKind?:string}} target
+ *   isBox は未開封BOX・パックなどの商品、boxKind はその形態（BOX / パック / デッキ / その他）
  *   hint は購入時の商品名やメモ（1ED・ミラーなどの手がかり）
  * @param {{id,name,model,url,price,stock}[]} items カードラッシュの検索結果
  * @returns {{quotes:{id:string, n:string, p:number, s:number, k:string, r?:string, g?:string, d?:boolean}[], note?:string} | {error:string}}
@@ -105,7 +106,17 @@ export function matchQuotes(target, items) {
     return '';
   };
   let note = '';
-  const fail = step((x) => normName(x.base) === normName(own.base),
+  // 未開封商品（【未開封BOX】など）とカードは混ぜない
+  list = list.filter((x) => !!x.p.sealedProduct === !!target.isBox);
+  // 未開封商品は正式名が長いので、完全一致がなければ「名前を含み、型番も含む」商品が1種類だけのときに使う
+  let nameOk = (x) => normName(x.base) === normName(own.base);
+  if (target.isBox && !list.some(nameOk)) {
+    const sc = norm(target.setCode);
+    const loose = list.filter((x) => normName(x.base).includes(normName(own.base)) && (!sc || norm(x.p.name).includes(sc) || knownModel(x.p.setCode) === sc));
+    const bases = new Set(loose.map((x) => normName(x.base)));
+    if (bases.size === 1) { const b = [...bases][0]; nameOk = (x) => normName(x.base) === b; }
+  }
+  const fail = step(nameOk,
     (xs) => `カード名「${own.base}」と同じ名前の商品が見つかりません${xs.length ? `（検索結果の例: ${uniq(xs.map((x) => x.base))}）` : ''}`)
     || step((x) => !target.number || norm(x.p.number) === norm(target.number),
       (xs) => `番号「${target.number}」の商品が見つかりません（検索結果にある番号: ${uniq(xs.map((x) => x.p.number))}）`)
@@ -116,7 +127,9 @@ export function matchQuotes(target, items) {
     || step((x) => !x.tokens.some((t) => LANG.test(t)) || LANG.test(hint),
       () => '海外版の商品しか見つかりません')
     || step(rarityOk,
-      (xs) => `レアリティ「${target.rarity}」の商品が見つかりません（検索結果にあるレアリティ: ${uniq(xs.map((x) => x.p.rarity || x.tokens.find(isRarityTok)))}）`);
+      (xs) => `レアリティ「${target.rarity}」の商品が見つかりません（検索結果にあるレアリティ: ${uniq(xs.map((x) => x.p.rarity || x.tokens.find(isRarityTok)))}）`)
+    || step((x) => !target.isBox || !target.boxKind || target.boxKind === 'その他' || String(x.p.sealedProduct).includes(target.boxKind),
+      (xs) => `形態「${target.boxKind}」の商品が見つかりません（検索結果にある形態: ${uniq(xs.map((x) => String(x.p.sealedProduct).replace(/^未開封/, '')))}）`);
   if (fail) return { error: fail };
   // 未開封かどうかは一致するものを優先し、なければもう一方の価格で代用する
   const sameSeal = list.filter((x) => !!x.p.sealed === !!target.sealed);

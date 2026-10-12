@@ -51,7 +51,8 @@ export const openSite = () => call({ action: 'open' });
 /**
  * 「〔状態B〕マリィ【SR】{198/190}」+ 型番「s4a」を分解する
  * 未開封品は【未開封パック】【未開封BOX】のようにレアリティ欄に書かれる
- * @returns {{name:string, rarity:string, number:string, setCode:string, condRank:string, sealed:boolean}}
+ * @returns {{name:string, rarity:string, number:string, setCode:string, condRank:string, sealed:boolean, sealedProduct:string}}
+ *   sealedProduct は「未開封BOX」「未開封パック」などの未開封商品の種類（カードなら空）
  */
 export function parseItem(item) {
   let s = String(item.name || '').trim();
@@ -64,9 +65,10 @@ export function parseItem(item) {
   if (rar) s = s.slice(0, rar.index).trim();
   let rarity = rar && rar[1] !== '-' ? rar[1] : '';
   const sealed = /未開封/.test(rarity) || /未開封/.test(s);
-  if (/^未開封/.test(rarity)) rarity = '';
+  const sealedProduct = /^未開封/.test(rarity) ? rarity : '';
+  if (sealedProduct) rarity = '';
   s = s.replace(/[(（【]未開封[)）】]/g, '').trim();
-  return { name: s, rarity, number: num && num[1].trim() !== '-' ? num[1].trim() : '', setCode: String(item.model || '').trim(), condRank: rank ? rank[1] : '', sealed };
+  return { name: s, rarity, number: num && num[1].trim() !== '-' ? num[1].trim() : '', setCode: String(item.model || '').trim(), condRank: rank ? rank[1] : '', sealed, sealedProduct };
 }
 
 // フリマの商品名などから検索語を作る（ノイズになりやすい語を除く）
