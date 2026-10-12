@@ -1384,7 +1384,7 @@ function viewImport() {
         キーワードで${esc(s.gameName)}以外を除外し、Gemini でカード名・レアリティ・型番を推定できます。</p>
       ${ready ? '' : '<div class="notice">先に <button class="link" data-action="nav" data-view="settings">設定</button> で Google OAuth クライアントID を登録してください。</div>'}
       <div class="row">
-        <label class="fld inline"><span>この日以降</span><input type="date" id="scan-after" value="${esc(s.lastScanDate)}"></label>
+        <label class="fld inline"><span>この日以降</span><input type="date" id="scan-after" value="${esc(s.lastScanDate)}" ${DATE_ATTRS}></label>
         <button class="btn primary" data-action="scan-gmail" ${ready ? '' : 'disabled'}>${state.scanning ? 'スキャン中…' : 'Gmail をスキャン'}</button>
       </div>
       <p id="scan-progress" class="muted small" aria-live="polite"></p>
@@ -1549,8 +1549,11 @@ function viewSettings() {
 const cardDlg = () => $('#card-dialog');
 const cardForm = () => $('#card-form');
 
+// 日付欄の上限を 9999 年にすると、Chrome は年を4桁として扱い、4桁入力したら月へ自動で移る
+const DATE_ATTRS = 'min="1900-01-01" max="9999-12-31"';
+
 function fld(label, name, value, type = 'text', extra = '') {
-  return `<label class="fld"><span>${label}</span><input type="${type}" name="${name}" value="${esc(value)}" ${extra}></label>`;
+  return `<label class="fld"><span>${label}</span><input type="${type}" name="${name}" value="${esc(value)}" ${type === 'date' ? DATE_ATTRS : ''} ${extra}></label>`;
 }
 
 // navIds: 前へ/次へで移動できるカードの並び（一覧から開いたときは絞り込み結果）
@@ -1595,16 +1598,9 @@ async function commitEditing() {
       return true;
     }
   }
-  // 所持カードは保存時に相場（カードラッシュの価格一覧）を取得する。拡張機能がない環境では飛ばす
-  if (c.status === 'owned' && c.name && marketNeedsFetch(c)) {
-    try {
-      await CR.ping();
-      toast('相場を取得しています…');
-      c.market = await fetchMarket(c);
-    } catch (e) {
-      if (!(e instanceof CR.NoExtensionError)) toast(`相場を取得できませんでした（カードは保存します）: ${e.message}`, 'error');
-    }
-  }
+  // 編集中に裏で新しい相場が取得されていたら、それを引き継ぐ（古い相場で上書きしない）
+  const cur = state.cards.find((x) => x.id === c.id && !x.deleted);
+  if (cur?.market?.at && String(cur.market.at) > String(c.market?.at || '') && cur.market.sig === marketSig(c)) c.market = cur.market;
   // 状態写真: 追加分を保存し、外した分は削除の墓標にする
   const t = nowIso();
   const persisted = new Set(state.cards.find((x) => x.id === c.id)?.cond?.photos || []);
@@ -1614,6 +1610,8 @@ async function commitEditing() {
   if (put.length || del.length) await db.putMany('photos', [...put, ...del]);
   await saveCard(c);
   state.editingOrig = JSON.stringify(c);
+  // 所持カードの相場（カードラッシュの価格一覧）は保存後に裏で取得する（保存の操作を待たせない）
+  if (c.status === 'owned' && c.name && marketNeedsFetch(c)) queueMarket(c.id);
   return true;
 }
 
@@ -1690,10 +1688,74 @@ async function updateMarket(cards, { force = false } = {}) {
   }
 }
 
-// 画面下の進捗表示
+// ---------- 保存したカードの相場を裏で順番に取得する ----------
+const marketQueue = [];
+let marketWorking = false;
+
+function queueMarket(id) {
+  if (!marketQueue.includes(id)) marketQueue.push(id);
+  renderMarketStatus();
+  if (!marketWorking) processMarketQueue();
+}
+
+async function processMarketQueue() {
+  marketWorking = true;
+  try {
+    // 拡張機能がない環境（スマホなど）では何もしない
+    try { await CR.ping(); } catch (e) {
+      if (!(e instanceof CR.NoExtensionError)) toast(`相場を取得できませんでした: ${e.message}`, 'error');
+      marketQueue.length = 0;
+      return;
+    }
+    while (marketQueue.length) {
+      renderMarketStatus();
+      const id = marketQueue[0];
+      const c0 = state.cards.find((x) => x.id === id && !x.deleted);
+      if (c0 && c0.status === 'owned' && marketNeedsFetch(c0)) {
+        try {
+          const market = await fetchMarket(c0);
+          // 取得中に編集・保存されていても、最新のカードに相場だけを反映する
+          const latest = state.cards.find((x) => x.id === id && !x.deleted);
+          if (latest) {
+            await saveCard({ ...latest, market });
+            onMarketFetched(id, market);
+          }
+        } catch (e) {
+          toast(`「${title(c0)}」の相場を取得できませんでした: ${e.message}`, 'error');
+        }
+      }
+      marketQueue.shift();
+    }
+  } finally {
+    marketWorking = false;
+    renderMarketStatus();
+  }
+}
+
+// 裏で取得した相場を画面に反映する（開いているカード詳細も含む）
+function onMarketFetched(id, market) {
+  if (cardDlg().open && state.editing?.id === id) {
+    state.editing.market = market;
+    // 相場の更新だけで「保存していない変更」と判定されないよう、基準にも反映する
+    try {
+      const orig = JSON.parse(state.editingOrig);
+      orig.market = market;
+      state.editingOrig = JSON.stringify(orig);
+    } catch { /* 基準が壊れていても続行 */ }
+    if ($('#market-sec')) $('#market-sec').outerHTML = marketSectionHtml(state.editing);
+  }
+  refreshView();
+}
+
+// 画面下の進捗表示（一括更新、または保存したカードの裏取得）
 function renderMarketStatus() {
   const el = $('#market-status');
   const r = state.marketRun;
+  if (!r && marketQueue.length) {
+    el.hidden = false;
+    el.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>相場を取得中…${marketQueue.length > 1 ? `（残り ${marketQueue.length}件）` : ''}</span>`;
+    return;
+  }
   if (!r) { el.hidden = true; el.innerHTML = ''; return; }
   el.hidden = false;
   el.innerHTML = `<span>相場を取得中… ${r.done} / ${r.total}（取得 ${r.ok}・不可 ${r.ng}）</span>
@@ -1814,7 +1876,7 @@ function renderCrPicker() {
       <button type="button" class="icon-btn" data-action="cr-close" aria-label="閉じる">×</button></header>
     <div class="dlg-body">
       <form class="row" id="cr-form" style="margin-top:0">
-        <input id="cr-q" class="grow" type="search" value="${esc(cr.q)}" placeholder="カード名（例: マリィ SR）" aria-label="カードラッシュで検索">
+        <input id="cr-q" class="grow" type="search" lang="ja" autocomplete="off" value="${esc(cr.q)}" placeholder="カード名（例: マリィ SR）" aria-label="カードラッシュで検索">
         <button class="btn primary" type="submit">検索</button>
       </form>
       ${cr.note ? `<p class="small">${esc(cr.note)}</p>` : ''}
@@ -1949,7 +2011,7 @@ function condSectionHtml(c) {
       <section class="sub cond">
         <div class="panel-head"><h3>状態チェック</h3>
           <div class="row" style="margin:0">
-            <label class="fld inline" style="margin:0"><span>点検日</span><input type="date" name="cond.inspectedAt" value="${esc(cond.inspectedAt)}"></label>
+            <label class="fld inline" style="margin:0"><span>点検日</span><input type="date" name="cond.inspectedAt" value="${esc(cond.inspectedAt)}" ${DATE_ATTRS}></label>
             <button type="button" class="btn small ghost" data-action="cond-today">今日</button>
           </div></div>
 

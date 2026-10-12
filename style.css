@@ -451,3 +451,6 @@ td .gain { margin-left: 0; }
 .table td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cell-amt { display: block; }
 td .gain { display: block; margin-left: 0; }
+.spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
