@@ -382,21 +382,28 @@ async function loadPhotos(ids) {
 
 // 「未確認」追加前のカードは欠陥が初期値の「なし」で保存されている。
 // 点検日・総合評価・白かけ位置・メモが空で全項目「なし」のカードは未確認とみなして一度だけ移行する
-// 名前が未開封商品らしく番号もないカードを、一度だけ未開封BOX・パックへ移す
+// カードとして登録されているが未開封商品と思われるか
+// （レアリティ欄が「未開封BOX」などの旧データ、または番号なし（「-」含む）で名前が未開封商品らしいもの）
+const shouldBeBox = (c) => !isBox(c) && (/^未開封/.test(c.rarity || '')
+  || ((!c.number || c.number.trim() === '-') && looksLikeBox(c.name)));
+
+// 未開封商品と思われるカードを、一度だけ未開封BOX・パックへ移す（条件を広げたので v2 として再実行）
 async function migrateBoxes() {
-  if (await db.get('meta', 'migratedBoxes')) return 0;
+  if (await db.get('meta', 'migratedBoxes2')) return 0;
   const t = nowIso();
   const changed = [];
   for (const c of state.cards) {
-    if (c.deleted || isBox(c) || c.number || !looksLikeBox(c.name)) continue;
+    if (c.deleted || !shouldBeBox(c)) continue;
+    c.boxKind = /^未開封/.test(c.rarity || '') ? c.rarity.replace(/^未開封/, '') || 'BOX' : guessBoxKind(c.name);
     c.itemType = 'box';
-    c.boxKind = guessBoxKind(c.name);
     c.sealed = true;
+    if (/^未開封/.test(c.rarity || '')) c.rarity = '';
+    if ((c.number || '').trim() === '-') c.number = '';
     c.updatedAt = t;
     changed.push(c);
   }
   if (changed.length) { await db.putMany('cards', changed); markDirty(); }
-  await db.put('meta', { key: 'migratedBoxes', at: t, count: changed.length });
+  await db.put('meta', { key: 'migratedBoxes2', at: t, count: changed.length });
   if (changed.length) toast(`商品名から ${changed.length}件 を未開封BOX・パックに変更しました`, 'ok');
   return changed.length;
 }
@@ -2062,7 +2069,7 @@ function renderCardForm() {
           ${fld('画像URL', 'imageUrl', c.imageUrl, 'url')}
         </div>
       </div>
-      ${!isBox(c) && !c.number && looksLikeBox(c.name) ? '<div class="notice small">未開封BOX・パックの商品名のようです。<button type="button" class="btn small" data-action="to-box">未開封BOX・パックにする</button></div>' : ''}
+      ${shouldBeBox(c) ? '<div class="notice small">未開封BOX・パックの商品名のようです。<button type="button" class="btn small" data-action="to-box">未開封BOX・パックにする</button></div>' : ''}
       ${c.rawTitle ? `<p class="muted small">元の商品名: ${esc(c.rawTitle)}</p>` : ''}
       <label class="fld"><span>メモ</span><textarea name="memo" rows="2">${esc(c.memo)}</textarea></label>
       ${c.status === 'wish' ? '' : marketSectionHtml(c)}
@@ -2304,7 +2311,11 @@ const actions = {
   'cond-today': () => { syncForm(); state.editing.cond.inspectedAt = today(); renderCardForm(); },
   'to-box': () => {
     syncForm();
-    Object.assign(state.editing, { itemType: 'box', boxKind: guessBoxKind(state.editing.name), sealed: true, rarity: '', grade: '未鑑定' });
+    const e = state.editing;
+    Object.assign(e, {
+      itemType: 'box', boxKind: /^未開封/.test(e.rarity || '') ? e.rarity.replace(/^未開封/, '') || 'BOX' : guessBoxKind(e.name),
+      sealed: true, rarity: '', grade: '未鑑定', number: (e.number || '').trim() === '-' ? '' : e.number,
+    });
     renderCardForm();
   },
   'defects-none': () => {
@@ -2489,7 +2500,7 @@ document.addEventListener('change', (e) => {
   // カード名を入れ終えたとき、未開封商品らしければ BOX にする案内を出す
   if (el.name === 'name' && el.closest('#card-form') && !$('[data-action="to-box"]')) {
     syncForm();
-    if (!isBox(state.editing) && !state.editing.number && looksLikeBox(state.editing.name)) renderCardForm();
+    if (shouldBeBox(state.editing)) renderCardForm();
   }
   if (el.closest('#card-form') && /^(cond\.overall|cond\.defects\.|grade$)/.test(el.name) && $('#market-sec')) {
     syncForm();
