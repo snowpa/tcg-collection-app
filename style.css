@@ -186,9 +186,15 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   font: inherit; color: inherit; cursor: pointer; box-shadow: var(--shadow); transition: transform .2s cubic-bezier(.2, .8, .2, 1), box-shadow .2s ease, border-color .2s ease; will-change: transform;
 }
-/* マウスを乗せると少し浮き上がる（タッチ端末では残らないよう、ホバーできる環境だけ） */
+/* マウスを乗せると画面側に浮き出る（タッチ端末では残らないよう、ホバーできる環境だけ） */
 @media (hover: hover) and (pointer: fine) {
-  .tile:hover { transform: translateY(-6px); border-color: var(--accent); box-shadow: 0 6px 12px rgba(20, 25, 40, .10), 0 16px 32px rgba(20, 25, 40, .14); }
+  .tile:hover {
+    /* 画面側（Z軸方向）に浮かせる。隣のカードより手前に重ねて表示する */
+    transform: perspective(800px) translateZ(24px);
+    position: relative; z-index: 2;
+    border-color: var(--accent);
+    box-shadow: 0 2px 6px rgba(20, 25, 40, .10), 0 12px 36px rgba(20, 25, 40, .22);
+  }
 }
 .tile:focus-visible { border-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
