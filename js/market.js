@@ -232,3 +232,55 @@ export function estimate(target, items) {
   const m = matchQuotes(target, items);
   return m.error ? m : priceFromQuotes(m.quotes, target);
 }
+
+// ---------- 鑑定候補（美品と PSA10 の価格差） ----------
+
+// 保存した価格一覧から、美品（無印）と PSA10 の価格を取り出す（それぞれ在庫あり優先の最安）
+export function spreadFromQuotes(quotes) {
+  const best = (xs) => [...xs].sort((a, b) => (b.s > 0) - (a.s > 0) || a.p - b.p)[0];
+  const normal = best((quotes || []).filter((q) => q.k === 'normal'));
+  const psa10 = best((quotes || []).filter((q) => q.k === 'graded' && q.g === 'PSA10' && !q.d));
+  if (!normal || !psa10) return null;
+  return {
+    normal: normal.p, psa10: psa10.p, ratio: psa10.p / normal.p, diff: psa10.p - normal.p,
+    urlNormal: normal.u || CR_PRODUCT + normal.id, urlPsa10: psa10.u || CR_PRODUCT + psa10.id,
+  };
+}
+
+/**
+ * カードラッシュの検索結果を同じカード（名前・番号・版違い）ごとにまとめ、美品と PSA10 の両方があるものを返す
+ * @returns {{name:string, number:string, rarity:string, model:string, normal:number, psa10:number, ratio:number, diff:number,
+ *            urlNormal:string, urlPsa10:string, thumb:string, normalStock:number}[]}
+ */
+export function spreadGroups(items) {
+  const groups = new Map();
+  for (const it of items) {
+    if (!(it.price > 0)) continue;
+    const p = parseItem(it);
+    if (p.sealedProduct) continue; // 未開封BOX・パックは対象外
+    const v = splitVariant(p.name);
+    const x = { it, p, r: classifyRank(p.condRank), base: v.base, tokens: v.tokens };
+    if (x.tokens.some((t) => LANG.test(t))) continue; // 海外版は除く
+    const variant = otherTokens(x).map(norm).sort().join('/');
+    const key = [normName(x.base), norm(p.number), variant, x.tokens.some(isFirstTok), x.tokens.some(isMirrorTok), p.sealed].join('|');
+    if (!groups.has(key)) groups.set(key, { name: p.name, number: p.number, rarity: p.rarity, model: '', normals: [], psa10s: [], thumb: '' });
+    const g = groups.get(key);
+    if (knownModel(p.setCode)) g.model = p.setCode;
+    if (!g.thumb && it.thumb) g.thumb = it.thumb;
+    if (x.r.kind === 'normal') { g.normals.push(it); g.name = p.name; if (p.rarity) g.rarity = p.rarity; }
+    if (x.r.kind === 'graded' && x.r.grade === 'PSA10' && !x.r.damaged) g.psa10s.push(it);
+  }
+  const best = (xs) => [...xs].sort((a, b) => (b.stock > 0) - (a.stock > 0) || a.price - b.price)[0];
+  const out = [];
+  for (const g of groups.values()) {
+    const n = best(g.normals);
+    const t = best(g.psa10s);
+    if (!n || !t) continue;
+    out.push({
+      name: g.name, number: g.number, rarity: g.rarity, model: g.model, thumb: n.thumb || g.thumb,
+      normal: n.price, psa10: t.price, ratio: t.price / n.price, diff: t.price - n.price,
+      urlNormal: n.url, urlPsa10: t.url, normalStock: n.stock || 0,
+    });
+  }
+  return out;
+}

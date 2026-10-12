@@ -8,7 +8,7 @@ import * as CR from './cardrush.js';
 import * as MK from './market.js';
 
 // アプリの版（sw.js の CACHE と合わせて更新する。不具合の問い合わせ時に確認用）
-const APP_VERSION = 'v31';
+const APP_VERSION = 'v32';
 
 // ================= 共通ユーティリティ =================
 
@@ -90,6 +90,7 @@ const DEFAULT_SETTINGS = {
   geminiKey: '',
   geminiModel: 'gemini-2.5-flash',
   psaPos: 'mid', // PSA の相場の割合の目安のどこを使うか（low / mid / high）
+  gradeFee: 4000, // 鑑定候補で差し引く PSA 鑑定の費用（1枚あたりの目安）
   sellRate: 70, // 売却概算 = カードラッシュ売値（相場）の何%か
   gameName: 'ポケモンカード',
   autoAi: false,
@@ -159,6 +160,7 @@ const state = {
   navIds: [],
   cr: null, // カードラッシュ検索ダイアログの状態
   crWalk: false, // 選択したカードを順にカードラッシュで照合中
+  grading: { q: '', items: [], page: 0, total: 0, loading: false, error: '', sort: 'ratio', includeGraded: false }, // 鑑定候補
   marketRun: null, // 相場の一括更新の進捗
   dirty: false,
   localHandle: null,
@@ -899,6 +901,7 @@ async function ignoreCandidates() {
 const NAV = [
   ['dashboard', 'ホーム', '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>'],
   ['collection', 'コレクション', '<rect x="3" y="4" width="7" height="9" rx="1"/><rect x="14" y="4" width="7" height="9" rx="1"/><rect x="3" y="15" width="18" height="5" rx="1"/>'],
+  ['grading', '鑑定候補', '<circle cx="12" cy="9" r="5"/><path d="M8.5 13 7 21l5-3 5 3-1.5-8"/>'],
   ['wish', 'ほしいもの', '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>'],
   ['import', '取り込み', '<path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v3h16v-3"/>'],
   ['settings', '設定', '<circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10l2.1 2.1M4.9 19.1l2.1-2.1m10-10l2.1-2.1"/>'],
@@ -925,7 +928,7 @@ function updateSyncButton() {
 function render() {
   renderNav();
   const main = $('#main');
-  const views = { dashboard: viewDashboard, collection: viewCollection, wish: viewWish, import: viewImport, settings: viewSettings };
+  const views = { dashboard: viewDashboard, collection: viewCollection, grading: viewGrading, wish: viewWish, import: viewImport, settings: viewSettings };
   main.innerHTML = (views[state.view] || viewDashboard)();
   if (state.view === 'dashboard') {
     const el = $('#asset-chart');
@@ -933,6 +936,7 @@ function render() {
   }
   if (state.view === 'collection') renderResults({ keep: true });
   if (state.view === 'settings') updateCrStatus();
+  if (state.view === 'grading') renderGradingSearch();
   if (state.view === 'import') renderScanResults();
   updateSyncButton();
 }
@@ -1405,6 +1409,114 @@ async function applyBulk() {
   $('#bulk-dialog').close();
   toast(`${changed.length}件を更新しました`, 'ok');
   refreshView();
+}
+
+// ---------- 鑑定候補（美品と PSA10 の価格差） ----------
+
+const GRADING_SORTS = [['ratio', '倍率が大きい順'], ['diff', '差額が大きい順']];
+
+function sortSpread(rows) {
+  const by = state.grading.sort === 'diff' ? (a, b) => b.sp.diff - a.sp.diff : (a, b) => b.sp.ratio - a.sp.ratio;
+  return rows.sort(by);
+}
+
+// 価格差の1行（手持ち・検索結果で共通）
+function spreadCells(sp) {
+  const fee = num(state.settings.gradeFee);
+  const net = sp.diff - fee;
+  return `<td class="r num"><a href="${esc(sp.urlNormal)}" target="_blank" rel="noopener">${yen(sp.normal)}</a></td>
+    <td class="r num"><a href="${esc(sp.urlPsa10)}" target="_blank" rel="noopener">${yen(sp.psa10)}</a></td>
+    <td class="r num"><strong class="${sp.ratio >= 2 ? 'up' : ''}">×${sp.ratio.toFixed(2)}</strong></td>
+    <td class="r num">${yen(sp.diff)}</td>
+    <td class="r num"><span class="${net >= 0 ? 'up' : 'down'}">${net >= 0 ? '+' : ''}${yen(net)}</span></td>`;
+}
+
+const SPREAD_HEAD = '<th class="r">美品</th><th class="r">PSA10</th><th class="r">倍率</th><th class="r">差額</th><th class="r">鑑定費用差引</th>';
+
+function viewGrading() {
+  const g = state.grading;
+  const owned = live('owned').filter((c) => !isBox(c));
+  const target = owned.filter((c) => g.includeGraded || !MK.normGrade(c.grade));
+  const rows = sortSpread(target.map((c) => ({ c, sp: c.market?.quotes ? MK.spreadFromQuotes(c.market.quotes) : null })).filter((x) => x.sp));
+  const noMarket = target.filter((c) => !c.market?.quotes).length;
+  const noSpread = target.length - rows.length - noMarket;
+  return `
+    <div class="panel-head"><h1>鑑定候補</h1></div>
+    <p class="muted small">カードラッシュの「美品（無印）」と「PSA10鑑定済」の販売価格を比べ、PSA 鑑定に出すと値上がりが大きいカードを探します。倍率 = PSA10 ÷ 美品、差額 = PSA10 − 美品、鑑定費用差引 = 差額 − 鑑定費用です。PSA10 が取れるとは限らないので、状態評価やセンタリングも合わせて判断してください。</p>
+    <div class="toolbar">
+      <label class="fld inline" style="margin:0"><span>並び順</span><select data-grading="sort">${GRADING_SORTS.map(([v, l]) => opt(v, l, g.sort)).join('')}</select></label>
+      <label class="fld inline" style="margin:0"><span>鑑定費用（1枚）</span><input type="number" min="0" step="100" data-setting="gradeFee" value="${esc(num(state.settings.gradeFee))}" style="width:110px"><span>円</span></label>
+    </div>
+
+    <section class="panel">
+      <div class="panel-head"><h2>手持ちのカード</h2>
+        <label class="check small" style="margin:0"><input type="checkbox" data-grading="includeGraded" ${g.includeGraded ? 'checked' : ''}> 鑑定済みのカードも含める</label></div>
+      ${rows.length ? `<div class="table-wrap"><table class="table">
+        <thead><tr><th></th><th>カード</th><th>状態</th>${SPREAD_HEAD}</tr></thead>
+        <tbody>${rows.map(({ c, sp }) => {
+          const img = thumbOf(c);
+          const cond = condOf(c);
+          const centOk = ['front', 'back'].map((k) => centeringOf(cond.centering[k], k)).filter(Boolean);
+          return `<tr data-action="open-card" data-id="${c.id}" tabindex="0">
+            <td><span class="thumb">${img ? `<img src="${esc(img)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}</span></td>
+            <td><strong>${esc(title(c))}</strong>${qty(c) > 1 ? ` <span class="muted small">×${qty(c)}</span>` : ''}<br><span class="muted small">${esc([c.rarity, c.setCode, c.number, MK.normGrade(c.grade)].filter(Boolean).join(' · '))}</span></td>
+            <td class="small">${cond.overall ? `<span class="badge rating r-${esc(cond.overall)}">${esc(cond.overall)}</span>` : '<span class="muted">未評価</span>'}
+              ${centOk.length ? `<br>${centOk.every((r) => r.ok) ? '<span class="up">センタリング目安内</span>' : '<span class="down">センタリング目安外</span>'}` : ''}</td>
+            ${spreadCells(sp)}</tr>`;
+        }).join('')}</tbody></table></div>`
+        : emptyState('美品と PSA10 の両方の価格が分かる手持ちのカードがありません。ホームの「相場を更新」で価格一覧を取得すると表示されます。')}
+      ${noMarket || noSpread ? `<p class="muted small">${noMarket ? `相場が未取得のカード ${noMarket}件` : ''}${noMarket && noSpread ? '、' : ''}${noSpread ? `カードラッシュに美品か PSA10 の販売がないカード ${noSpread}件` : ''}は対象外です。</p>` : ''}
+    </section>
+
+    <section class="panel">
+      <h2>カードラッシュで探す</h2>
+      <form class="row" id="grading-form" style="margin-top:0">
+        <input id="grading-q" class="grow" type="search" lang="ja" autocomplete="off" value="${esc(g.q)}" placeholder="キーワード（例: SAR、マリィ、ポケモンカード151）" aria-label="カードラッシュで検索">
+        <button class="btn primary" type="submit">検索</button>
+      </form>
+      <p class="muted small">検索結果（1回で最大100件）を同じカードごとにまとめ、美品と PSA10 の両方が売られているカードを表示します。</p>
+      <div id="grading-results"></div>
+    </section>`;
+}
+
+function renderGradingSearch() {
+  const el = $('#grading-results');
+  if (!el) return;
+  const g = state.grading;
+  const groups = sortSpread(MK.spreadGroups(g.items).map((sp) => ({ sp })));
+  el.innerHTML = `
+    ${g.error ? `<div class="notice">${esc(g.error)}</div>` : ''}
+    ${g.page ? `<p class="muted small">「${esc(g.q)}」の検索結果 ${g.items.length} / ${g.total}件から ${groups.length}種類</p>` : ''}
+    ${groups.length ? `<div class="table-wrap"><table class="table">
+      <thead><tr><th></th><th>カード</th>${SPREAD_HEAD}</tr></thead>
+      <tbody>${groups.map(({ sp }) => `<tr>
+        <td><span class="thumb">${sp.thumb ? `<img src="${esc(sp.thumb)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}</span></td>
+        <td><strong>${esc(sp.name)}</strong><br><span class="muted small">${esc([sp.rarity, sp.model, sp.number].filter(Boolean).join(' · '))}${sp.normalStock ? '' : ' ・ 美品は売切'}</span></td>
+        ${spreadCells(sp)}</tr>`).join('')}</tbody></table></div>`
+      : g.page && !g.loading ? '<p class="muted">美品と PSA10 の両方が売られているカードは見つかりませんでした。</p>' : ''}
+    ${g.loading ? '<p class="muted small" aria-live="polite">検索中…</p>' : ''}
+    ${g.page && g.items.length < g.total && !g.loading ? '<div class="row center"><button class="btn" data-action="grading-more">さらに100件読み込む</button></div>' : ''}`;
+}
+
+async function gradingSearch(page) {
+  const g = state.grading;
+  if (!g.q) return;
+  g.loading = true;
+  g.error = '';
+  if (page === 1) { g.items = []; g.page = 0; }
+  renderGradingSearch();
+  try {
+    const r = await CR.search(g.q, page);
+    if (r.items.length && !('price' in r.items[0])) throw new Error('カードラッシュ連携の拡張機能が古いため価格を取得できません。chrome://extensions で拡張機能を更新してください');
+    g.items = page === 1 ? r.items : [...g.items, ...r.items];
+    g.total = r.total || g.items.length;
+    g.page = page;
+  } catch (e) {
+    g.error = e.message;
+  } finally {
+    g.loading = false;
+    renderGradingSearch();
+  }
 }
 
 // ---------- ほしいもの ----------
@@ -2273,6 +2385,7 @@ const actions = {
   'market-all': (el) => updateMarket(live('owned'), { force: !!el.dataset.force }),
   'market-selected': () => updateMarket(live('owned').filter((c) => state.selected.has(c.id)), { force: true }),
   'market-stop': () => { if (state.marketRun) state.marketRun.stop = true; },
+  'grading-more': () => gradingSearch(state.grading.page + 1),
   'cr-cand': (el) => {
     const cand = state.candidates[Number(el.dataset.idx)];
     openCrPicker({
@@ -2529,12 +2642,17 @@ document.addEventListener('change', (e) => {
     syncForm();
     $('#market-sec').outerHTML = marketSectionHtml(state.editing);
   }
+  if (el.dataset.grading) {
+    state.grading[el.dataset.grading] = el.type === 'checkbox' ? el.checked : el.value;
+    render();
+    return;
+  }
   if (el.dataset.setting) {
     const k = el.dataset.setting;
     state.settings[k] = el.type === 'checkbox' ? el.checked : el.type === 'number' ? num(el.value) : el.value.trim();
     saveSettings();
     if (k === 'clientId' && state.settings.clientId) G.loadGis().catch(() => {});
-    if (['clientId', 'autoDrive', 'psaPos', 'sellRate'].includes(k)) render();
+    if (['clientId', 'autoDrive', 'psaPos', 'sellRate', 'gradeFee'].includes(k)) render();
     return;
   }
   if (el.dataset.source !== undefined) {
@@ -2595,6 +2713,13 @@ async function init() {
   });
   $('#bulk-form').addEventListener('submit', guard(async (e) => { e.preventDefault(); await applyBulk(); }));
   cardDlg().addEventListener('close', () => { state.crWalk = false; });
+  // 鑑定候補のカードラッシュ検索
+  document.addEventListener('submit', (e) => {
+    if (e.target.id !== 'grading-form') return;
+    e.preventDefault();
+    state.grading.q = $('#grading-q').value.trim();
+    guard(gradingSearch)(1);
+  });
   $('#cr-dialog').addEventListener('submit', (e) => {
     if (e.target.id !== 'cr-form') return;
     e.preventDefault();
