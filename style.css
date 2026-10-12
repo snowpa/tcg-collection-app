@@ -184,9 +184,16 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 .tile {
   display: flex; flex-direction: column; text-align: left; padding: 0; overflow: hidden;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-  font: inherit; color: inherit; cursor: pointer; box-shadow: var(--shadow); transition: transform .12s;
+  font: inherit; color: inherit; cursor: pointer; box-shadow: var(--shadow); transition: transform .2s cubic-bezier(.2, .8, .2, 1), box-shadow .2s ease, border-color .2s ease; will-change: transform;
 }
-.tile:hover { transform: translateY(-2px); border-color: var(--accent); }
+/* マウスを乗せると少し浮き上がる（タッチ端末では残らないよう、ホバーできる環境だけ） */
+@media (hover: hover) and (pointer: fine) {
+  .tile:hover { transform: translateY(-6px); border-color: var(--accent); box-shadow: 0 6px 12px rgba(20, 25, 40, .10), 0 16px 32px rgba(20, 25, 40, .14); }
+}
+.tile:focus-visible { border-color: var(--accent); }
+@media (prefers-reduced-motion: reduce) {
+  .tile, .tile:hover { transform: none !important; }
+}
 .tile-img { position: relative; aspect-ratio: 63 / 88; background: linear-gradient(145deg, var(--surface2), var(--border)); overflow: hidden; }
 .tile-img img, .img-box img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
 img.broken { display: none; }
