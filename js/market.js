@@ -169,7 +169,10 @@ export function matchQuotes(target, items) {
     ...(x.r.kind === 'graded' ? { g: x.r.grade, d: x.r.damaged } : {}),
   }));
   if (!quotes.length) return { error: '状態に合う商品が見つかりません' };
-  return note ? { quotes, note } : { quotes };
+  // 型番が分かる商品の型番が1種類に決まれば返す（発売年の判定に使う）
+  const models = [...new Set(list.map((x) => knownModel(x.p.setCode) && x.p.setCode.trim()).filter(Boolean))];
+  const model = new Set(models.map(norm)).size === 1 ? models[0] : '';
+  return { quotes, ...(note ? { note } : {}), ...(model ? { model } : {}) };
 }
 
 /**

@@ -9,7 +9,7 @@ import * as MK from './market.js';
 import { yearFromSetCode, yearFromName, yearFromNameCode } from './sets.js';
 
 // アプリの版（sw.js の CACHE と合わせて更新する。不具合の問い合わせ時に確認用）
-const APP_VERSION = 'v37';
+const APP_VERSION = 'v38';
 
 // ================= 共通ユーティリティ =================
 
@@ -201,7 +201,8 @@ const marketValue = (c) => (marketUnit(c) ?? 0) * qty(c);
 // 売却概算 = 相場（カードラッシュ売値）× 売却率。1枚あたり10円単位
 // 発売年: 手で入れた値を優先し、なければシリーズ（セットコード）から自動で出す。分からなければ null
 // 型番 → 商品名のかっこ内のコード →（BOX のみ）商品名に含まれる弾の名前、の順に探す
-const autoYearOf = (c) => yearFromSetCode(c.setCode) ?? yearFromNameCode(c.name)
+// 型番 → 商品名のかっこ内のコード → 相場の照合で分かった商品の型番 →（BOX のみ）商品名に含まれる弾の名前、の順に探す
+const autoYearOf = (c) => yearFromSetCode(c.setCode) ?? yearFromNameCode(c.name) ?? yearFromSetCode(c.market?.model)
   ?? (isBox(c) ? yearFromName(`${c.name} ${c.setName || ''}`) : null);
 const yearOf = (c) => (num(c.releaseYear) > 0 ? num(c.releaseYear) : autoYearOf(c));
 const sellPct = () => { const r = num(state.settings.sellRate); return r > 0 && r <= 100 ? r : 70; };
@@ -1248,7 +1249,10 @@ function renderResults({ keep = false } = {}) {
   if (fb) fb.innerHTML = `絞り込み${chips.length ? `<span class="count">${chips.length}</span>` : ''}`;
 
   const boxQty = sum(list.filter(isBox), qty);
-  const summary = `<p class="muted small result-sum">${list.length}種類 / ${[sum(list, qty) - boxQty ? `${sum(list, qty) - boxQty}枚` : '', boxQty ? `BOX等 ${boxQty}個` : ''].filter(Boolean).join('・') || '0枚'} ・ 購入額 ${yen(sum(list, cardCost))}${list.some((c) => marketUnit(c) !== null) ? ` ・ 相場 ${yen(sum(list, marketValue))}（売却概算 ${yen(sum(list, sellValue))}）` : ''}</p>`;
+  const unknownYears = state.filters.year === 'none' ? list.filter((c) => !yearOf(c)).length : 0;
+  const yearHint = unknownYears ? `<div class="notice small">発売年が不明なカードが ${unknownYears}件あります。カードラッシュで照合して、型番から発売年を調べます（プロモは型番から年が決まらないため不明のまま残ります）。
+    <button class="btn small" data-action="year-lookup">発売年が不明な ${unknownYears}件を調べる</button></div>` : '';
+  const summary = yearHint + `<p class="muted small result-sum">${list.length}種類 / ${[sum(list, qty) - boxQty ? `${sum(list, qty) - boxQty}枚` : '', boxQty ? `BOX等 ${boxQty}個` : ''].filter(Boolean).join('・') || '0枚'} ・ 購入額 ${yen(sum(list, cardCost))}${list.some((c) => marketUnit(c) !== null) ? ` ・ 相場 ${yen(sum(list, marketValue))}（売却概算 ${yen(sum(list, sellValue))}）` : ''}</p>`;
   moreObserver?.disconnect();
   if (!list.length) {
     el.innerHTML = live('owned').length
@@ -1353,6 +1357,7 @@ function renderBulkBar() {
     <button class="btn small ghost" data-action="select-all">表示中の${state.resultIds.length}件をすべて選択</button>
     ${n ? '<button class="btn small ghost" data-action="select-none">選択解除</button>' : ''}
     <span class="spacer"></span>
+    <button class="btn small" data-action="year-selected" ${n ? '' : 'disabled'} title="発売年が不明なカードをカードラッシュで照合して型番から発売年を調べる">📅 発売年を調べる</button>
     <button class="btn small" data-action="market-selected" ${n ? '' : 'disabled'} title="選択したカードの相場をカードラッシュの販売価格から取得">💴 相場を更新</button>
     <button class="btn small" data-action="cr-walk" ${n ? '' : 'disabled'} title="選択したカードを1枚ずつカードラッシュで照合">🔎 カードラッシュで照合</button>
     <button class="btn small" data-action="bulk-edit" ${n ? '' : 'disabled'}>一括編集</button>
@@ -1871,16 +1876,16 @@ async function fetchMarket(c) {
     if (!m.error) {
       // 同じカードは見つかったが、今の状態・鑑定に合う価格がない（鑑定品しか売っていない等）→ 晴れる屋2の価格も合わせる
       const test = MK.priceFromQuotes(m.quotes, { grade: c.grade, rating: ratingOf(c), psaPos: state.settings.psaPos });
-      if (!test.error) return { ...base, quotes: m.quotes, ...(m.note ? { note: m.note } : {}) };
+      if (!test.error) return { ...base, quotes: m.quotes, ...(m.note ? { note: m.note } : {}), ...(m.model ? { model: m.model } : {}) };
       const h2more = await fetchHareruya2(target, queries[0]);
-      return { ...base, quotes: [...m.quotes, ...(h2more.quotes || [])], ...(m.note ? { note: m.note } : {}), ...(h2more.retry ? { retry: true } : {}) };
+      return { ...base, quotes: [...m.quotes, ...(h2more.quotes || [])], ...(m.note ? { note: m.note } : {}), ...(m.model ? { model: m.model } : {}), ...(h2more.retry ? { retry: true } : {}) };
     }
     last = m;
     if (/特定できません/.test(m.error)) break; // より短い検索語では同名カードがさらに混ざる
   }
   // カードラッシュで見つからない → 晴れる屋2で1回だけ探す
   const h2 = await fetchHareruya2(target, queries[0]);
-  if (h2.quotes) return { ...base, quotes: h2.quotes, source: 'hareruya2', ...(h2.note ? { note: h2.note } : {}) };
+  if (h2.quotes) return { ...base, quotes: h2.quotes, source: 'hareruya2', ...(h2.note ? { note: h2.note } : {}), ...(h2.model ? { model: h2.model } : {}) };
   const boxHint = isBox(c) && /名前/.test(last.error) ? '。未開封BOX・パックは「🔎 カードラッシュから取得」で商品を選ぶと照合できます' : '';
   return { ...base, error: `${last.error}${h2.reason ? `。晴れる屋2: ${h2.reason}` : ''}${boxHint}`, ...(h2.retry ? { retry: true } : {}) };
 }
@@ -1902,7 +1907,7 @@ async function fetchHareruya2(target, q) {
   }
 }
 
-async function updateMarket(cards, { force = false } = {}) {
+async function updateMarket(cards, { force = false, onDone = null } = {}) {
   if (state.marketRun) { toast('相場を更新中です'); return; }
   const v = await CR.ping();
   if (verNum(v) < verNum('1.1.0')) throw new Error(`カードラッシュ連携の拡張機能（v${v}）が古いため価格を取得できません。chrome://extensions で拡張機能を更新してください`);
@@ -1917,18 +1922,33 @@ async function updateMarket(cards, { force = false } = {}) {
       if (run.stop) break;
       const c = structuredClone(state.cards.find((x) => x.id === c0.id) || c0);
       c.market = await fetchMarket(c);
+      if (!c.setCode && c.market.model) c.setCode = c.market.model; // 型番欄が空なら照合で分かった型番を入れる
       await saveCard(c); // 1件ずつ保存（途中で止めても取得分は残る）
       run.done++;
       if (marketUnit(c) === null) run.ng++; else run.ok++;
       renderMarketStatus();
       await sleep(300);
     }
-    toast(`相場を更新しました（取得 ${run.ok}件${run.ng ? `・取得できず ${run.ng}件` : ''}${run.stop ? '・中止' : ''}）`, 'ok');
+    if (onDone) onDone(todo, run);
+    else toast(`相場を更新しました（取得 ${run.ok}件${run.ng ? `・取得できず ${run.ng}件` : ''}${run.stop ? '・中止' : ''}）`, 'ok');
   } finally {
     state.marketRun = null;
     renderMarketStatus();
     refreshView();
   }
+}
+
+// 発売年が不明なカードをカードラッシュで照合し、商品の型番から発売年を調べる
+async function lookupYears(cards) {
+  const targets = cards.filter((c) => !c.deleted && !yearOf(c));
+  if (!targets.length) { toast('発売年が不明なカードはありません'); return; }
+  await updateMarket(targets, {
+    force: true,
+    onDone: (todo) => {
+      const found = todo.filter((c) => yearOf(state.cards.find((x) => x.id === c.id) || c)).length;
+      toast(`発売年が分かったカード ${found}件${todo.length - found ? `・不明のまま ${todo.length - found}件（プロモなど。カード詳細で手入力できます）` : ''}`, 'ok');
+    },
+  });
 }
 
 // ---------- 保存したカードの相場を裏で順番に取得する ----------
@@ -1960,7 +1980,8 @@ async function processMarketQueue() {
           // 取得中に編集・保存されていても、最新のカードに相場だけを反映する
           const latest = state.cards.find((x) => x.id === id && !x.deleted);
           if (latest) {
-            await saveCard({ ...latest, market });
+            // 型番欄が空なら照合で分かった型番を入れる（発売年の判定にも使う）
+            await saveCard({ ...latest, market, ...(!latest.setCode && market.model ? { setCode: market.model } : {}) });
             onMarketFetched(id, market);
           }
         } catch (e) {
@@ -2406,6 +2427,8 @@ const actions = {
     } finally { el.disabled = false; }
   },
   'market-all': (el) => updateMarket(live('owned'), { force: !!el.dataset.force }),
+  'year-lookup': () => lookupYears(state.resultIds.map((id) => state.cards.find((c) => c.id === id)).filter(Boolean)),
+  'year-selected': () => lookupYears(live().filter((c) => state.selected.has(c.id))),
   'market-selected': () => updateMarket(live('owned').filter((c) => state.selected.has(c.id)), { force: true }),
   'market-stop': () => { if (state.marketRun) state.marketRun.stop = true; },
   'grading-more': () => gradingSearch(state.grading.page + 1),
