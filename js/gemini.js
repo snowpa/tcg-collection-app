@@ -2,69 +2,16 @@
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
-// 応答全体（候補・グラウンディング情報を含む）を返す
-async function request(apiKey, model, body) {
+async function generate(apiKey, model, parts, generationConfig) {
   if (!apiKey) throw new Error('設定画面で Gemini API キーを入力してください');
   const res = await fetch(`${BASE}${encodeURIComponent(model)}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ contents: [{ parts }], generationConfig }),
   });
   const j = await res.json().catch(() => ({}));
   if (!res.ok || j.error) throw new Error(`Gemini エラー: ${j.error?.message || res.status}`);
-  return j;
-}
-
-const textOf = (j) => (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
-
-async function generate(apiKey, model, parts, generationConfig) {
-  return textOf(await request(apiKey, model, { contents: [{ parts }], generationConfig }));
-}
-
-/**
- * Google 検索で調べてから、カード（またはBOX）の日本での発売年を答えさせる
- * グラウンディング（google_search）と JSON 出力指定は併用できないので、本文の JSON を取り出して読む
- * @returns {{year:number|null, confidence:'high'|'medium'|'low', product:string, reason:string, sources:{title:string,uri:string}[]}}
- */
-export async function researchYear({ apiKey, model, gameName, card }) {
-  const info = [
-    ['種類', card.isBox ? '未開封BOX・パック' : 'カード'],
-    ['名前', card.name], ['レアリティ', card.rarity], ['番号', card.number],
-    ['セットコード', card.setCode], ['セット名', card.setName],
-    ['購入時の商品名', card.rawTitle], ['メモ', card.memo],
-  ].filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join('\n');
-  const prompt = `
-あなたは${gameName}（日本語版）の専門家です。Google検索で調べて、次の${card.isBox ? '商品' : 'カード'}が日本で発売された年を答えてください。
-
-${info}
-
-ルール:
-- ${card.isBox ? 'その商品' : '同じ名前のカードは版違いが多いので、レアリティ・番号・購入時の商品名に合う版を選び、そのカードが収録された商品'}の日本での発売年を答える。
-- プロモカードは配布・同梱が始まった年を答える。
-- 検索結果で裏付けが取れないときや、候補の版が複数あって決めきれないときは year を null にし、推測で埋めない。
-- confidence は、検索結果で版と発売年がはっきり確認できたら high、おおむね確からしいが版の特定に少し不安があれば medium、それ以外は low。
-- 最後に次の JSON だけを1行で出力する（前後に説明を書かない）:
-{"year": 2010, "confidence": "high", "product": "収録商品名", "reason": "根拠を日本語で1〜2文"}
-`.trim();
-  const j = await request(apiKey, model, {
-    contents: [{ parts: [{ text: prompt }] }],
-    tools: [{ google_search: {} }],
-    generationConfig: { temperature: 0 },
-  });
-  const text = textOf(j);
-  const m = text.match(/\{[^{}]*"year"[^{}]*\}/g);
-  if (!m) throw new Error(`AIの回答を読めませんでした: ${text.slice(0, 80)}`);
-  const json = JSON.parse(m[m.length - 1]);
-  const year = Number(json.year);
-  const sources = (j.candidates?.[0]?.groundingMetadata?.groundingChunks || [])
-    .map((g) => g.web).filter((w) => w?.uri).map((w) => ({ title: w.title || w.uri, uri: w.uri })).slice(0, 5);
-  return {
-    year: year >= 1996 && year <= new Date().getFullYear() + 1 ? Math.floor(year) : null,
-    confidence: ['high', 'medium', 'low'].includes(json.confidence) ? json.confidence : 'low',
-    product: String(json.product || ''),
-    reason: String(json.reason || ''),
-    sources,
-  };
+  return (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
 }
 
 const CARD_SCHEMA = {
