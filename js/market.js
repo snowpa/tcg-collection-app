@@ -158,7 +158,9 @@ export function matchQuotes(target, items) {
   const keyed = list.filter((x) => knownModel(x.p.setCode) || !list.some((y) => knownModel(y.p.setCode)));
   const variants = new Set(keyed.map(variantKey));
   if (variants.size > 1) {
-    return { error: `同じ名前のカードが${variants.size}種類あり特定できません。カードラッシュで照合して番号・型番を入れてください` };
+    // 候補の型番も返す（候補がすべて同じ年の発売なら、発売年だけは決められるため）
+    const models = [...new Set(keyed.map((x) => knownModel(x.p.setCode) && x.p.setCode.trim()).filter(Boolean))];
+    return { error: `同じ名前のカードが${variants.size}種類あり特定できません。カードラッシュで照合して番号・型番を入れてください`, models };
   }
 
   // 保存は必要な項目だけ（k: normal=無印 / cond=状態ランク / graded=鑑定品）

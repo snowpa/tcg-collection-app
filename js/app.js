@@ -9,7 +9,7 @@ import * as MK from './market.js';
 import { yearFromSetCode, yearFromName, yearFromNameCode } from './sets.js';
 
 // アプリの版（sw.js の CACHE と合わせて更新する。不具合の問い合わせ時に確認用）
-const APP_VERSION = 'v38';
+const APP_VERSION = 'v39';
 
 // ================= 共通ユーティリティ =================
 
@@ -34,8 +34,10 @@ function toast(msg, type = 'info') {
   el.className = `toast ${type}`;
   el.textContent = msg;
   $('#toasts').appendChild(el);
-  setTimeout(() => el.classList.add('hide'), type === 'error' ? 6000 : 3000);
-  setTimeout(() => el.remove(), type === 'error' ? 6600 : 3600);
+  // 長いメッセージやエラーは読み切れるよう長めに表示する
+  const ms = msg.length > 60 ? 10000 : type === 'error' ? 6000 : 3000;
+  setTimeout(() => el.classList.add('hide'), ms);
+  setTimeout(() => el.remove(), ms + 600);
 }
 
 // 非同期処理のエラーをトーストに出す
@@ -202,7 +204,12 @@ const marketValue = (c) => (marketUnit(c) ?? 0) * qty(c);
 // 発売年: 手で入れた値を優先し、なければシリーズ（セットコード）から自動で出す。分からなければ null
 // 型番 → 商品名のかっこ内のコード →（BOX のみ）商品名に含まれる弾の名前、の順に探す
 // 型番 → 商品名のかっこ内のコード → 相場の照合で分かった商品の型番 →（BOX のみ）商品名に含まれる弾の名前、の順に探す
-const autoYearOf = (c) => yearFromSetCode(c.setCode) ?? yearFromNameCode(c.name) ?? yearFromSetCode(c.market?.model)
+// 候補の型番がすべて同じ年なら、その年（候補が複数で特定できないカード用）
+const yearFromModels = (models) => {
+  const years = new Set((models || []).map(yearFromSetCode));
+  return years.size === 1 && !years.has(null) ? [...years][0] : null;
+};
+const autoYearOf = (c) => yearFromSetCode(c.setCode) ?? yearFromNameCode(c.name) ?? yearFromSetCode(c.market?.model) ?? yearFromModels(c.market?.models)
   ?? (isBox(c) ? yearFromName(`${c.name} ${c.setName || ''}`) : null);
 const yearOf = (c) => (num(c.releaseYear) > 0 ? num(c.releaseYear) : autoYearOf(c));
 const sellPct = () => { const r = num(state.settings.sellRate); return r > 0 && r <= 100 ? r : 70; };
@@ -1887,7 +1894,7 @@ async function fetchMarket(c) {
   const h2 = await fetchHareruya2(target, queries[0]);
   if (h2.quotes) return { ...base, quotes: h2.quotes, source: 'hareruya2', ...(h2.note ? { note: h2.note } : {}), ...(h2.model ? { model: h2.model } : {}) };
   const boxHint = isBox(c) && /名前/.test(last.error) ? '。未開封BOX・パックは「🔎 カードラッシュから取得」で商品を選ぶと照合できます' : '';
-  return { ...base, error: `${last.error}${h2.reason ? `。晴れる屋2: ${h2.reason}` : ''}${boxHint}`, ...(h2.retry ? { retry: true } : {}) };
+  return { ...base, error: `${last.error}${h2.reason ? `。晴れる屋2: ${h2.reason}` : ''}${boxHint}`, ...(h2.retry ? { retry: true } : {}), ...(last.models?.length ? { models: last.models } : {}) };
 }
 
 // 晴れる屋2はアクセス制限が厳しいので、制限にかかったら5分間は問い合わせない
@@ -1945,8 +1952,19 @@ async function lookupYears(cards) {
   await updateMarket(targets, {
     force: true,
     onDone: (todo) => {
-      const found = todo.filter((c) => yearOf(state.cards.find((x) => x.id === c.id) || c)).length;
-      toast(`発売年が分かったカード ${found}件${todo.length - found ? `・不明のまま ${todo.length - found}件（プロモなど。カード詳細で手入力できます）` : ''}`, 'ok');
+      const after = todo.map((c) => state.cards.find((x) => x.id === c.id) || c);
+      const left = after.filter((c) => !yearOf(c));
+      // 不明のまま残った理由の内訳
+      const why = { プロモ: 0, '同じ名前のカードが複数あり特定できない（番号なし）': 0, 'カードラッシュで見つからない': 0, 'カードラッシュに型番がない': 0 };
+      for (const c of left) {
+        const err = c.market?.error || '';
+        if (/-P$/i.test(c.setCode || c.market?.model || '') || /^promo$/i.test(c.rarity || '')) why['プロモ']++;
+        else if (/特定できません/.test(err)) why['同じ名前のカードが複数あり特定できない（番号なし）']++;
+        else if (err) why['カードラッシュで見つからない']++;
+        else why['カードラッシュに型番がない']++;
+      }
+      const detail = Object.entries(why).filter(([, n]) => n).map(([k, n]) => `${k} ${n}件`).join('、');
+      toast(`発売年が分かったカード ${after.length - left.length}件${left.length ? `・不明のまま ${left.length}件（${detail}）。番号のないカードは「🔎 カードラッシュで照合」で商品を選ぶと決まります` : ''}`, left.length ? 'info' : 'ok');
     },
   });
 }
