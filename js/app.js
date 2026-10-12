@@ -9,7 +9,7 @@ import * as MK from './market.js';
 import { yearFromSetCode, yearFromName, yearFromNameCode } from './sets.js';
 
 // アプリの版（sw.js の CACHE と合わせて更新する。不具合の問い合わせ時に確認用）
-const APP_VERSION = 'v39';
+const APP_VERSION = 'v40';
 
 // ================= 共通ユーティリティ =================
 
@@ -1258,7 +1258,8 @@ function renderResults({ keep = false } = {}) {
   const boxQty = sum(list.filter(isBox), qty);
   const unknownYears = state.filters.year === 'none' ? list.filter((c) => !yearOf(c)).length : 0;
   const yearHint = unknownYears ? `<div class="notice small">発売年が不明なカードが ${unknownYears}件あります。カードラッシュで照合して、型番から発売年を調べます（プロモは型番から年が決まらないため不明のまま残ります）。
-    <button class="btn small" data-action="year-lookup">発売年が不明な ${unknownYears}件を調べる</button></div>` : '';
+    <button class="btn small" data-action="year-lookup">発売年が不明な ${unknownYears}件を調べる</button>
+    <button class="btn small" data-action="year-ai" title="Gemini が Google 検索で調べます。確度が低いものは入れません">🤖 残りをAIで調べる</button></div>` : '';
   const summary = yearHint + `<p class="muted small result-sum">${list.length}種類 / ${[sum(list, qty) - boxQty ? `${sum(list, qty) - boxQty}枚` : '', boxQty ? `BOX等 ${boxQty}個` : ''].filter(Boolean).join('・') || '0枚'} ・ 購入額 ${yen(sum(list, cardCost))}${list.some((c) => marketUnit(c) !== null) ? ` ・ 相場 ${yen(sum(list, marketValue))}（売却概算 ${yen(sum(list, sellValue))}）` : ''}</p>`;
   moreObserver?.disconnect();
   if (!list.length) {
@@ -2040,7 +2041,7 @@ function renderMarketStatus() {
   }
   if (!r) { el.hidden = true; el.innerHTML = ''; return; }
   el.hidden = false;
-  el.innerHTML = `<span>相場を取得中… ${r.done} / ${r.total}（取得 ${r.ok}・不可 ${r.ng}）</span>
+  el.innerHTML = `<span>${r.label || '相場を取得中…'} ${r.done} / ${r.total}（${r.label ? '判明' : '取得'} ${r.ok}・不可 ${r.ng}）</span>
     <span class="bar"><i style="width:${(r.done / r.total) * 100}%"></i></span>
     <button class="btn small ghost" data-action="market-stop">中止</button>`;
 }
@@ -2255,6 +2256,7 @@ function renderCardForm() {
           ${fld(isBox(c) ? '型番' : 'セットコード', 'setCode', c.setCode, 'text', `placeholder="${isBox(c) ? 'SV2a' : 'S4a'}"`)}
           ${fld('セット名', 'setName', c.setName, 'text', 'placeholder="シャイニースターV"')}
           ${fld('発売年', 'releaseYear', c.releaseYear, 'number', `min="1996" max="2100" step="1" placeholder="${autoYearOf(c) ? `${autoYearOf(c)}（シリーズから自動）` : '例: 2023'}"`)}
+          ${autoYearOf(c) && !num(c.releaseYear) ? '' : yearResearchHtml(c)}
           ${isBox(c) ? '' : fld('鑑定', 'grade', c.grade, 'text', 'list="dl-grade"')}
           ${isBox(c) ? '' : `<label class="check fld-check"><input type="checkbox" name="sealed" ${c.sealed ? 'checked' : ''}> 未開封<span class="muted small">（透明パック入りのプロモなど）</span></label>`}
           ${isBox(c) ? `<label class="fld"><span>形態</span><select name="boxKind">${['BOX', 'パック', 'デッキ', 'その他'].map((k) => opt(k, k, c.boxKind || 'BOX')).join('')}</select></label>` : ''}
@@ -2373,7 +2375,11 @@ function syncForm() {
     } else if (k === 'sealed') continue;
     else if (k === 'tags') c.tags = splitList(v);
     else if (k === 'quantity') c.quantity = Math.max(1, Math.floor(num(v)) || 1);
-    else if (k === 'purchasePrice' || k === 'targetPrice' || k === 'releaseYear') c[k] = v === '' ? '' : num(v);
+    else if (k === 'releaseYear') {
+      const y = v === '' ? '' : num(v);
+      if (y !== c.releaseYear) delete c.yearInfo; // 手で直したら AI調査の記録は消す
+      c.releaseYear = y;
+    } else if (k === 'purchasePrice' || k === 'targetPrice') c[k] = v === '' ? '' : num(v);
     else c[k] = typeof v === 'string' ? v.trim() : v;
   }
   const sealed = cardForm().querySelector('[name="sealed"]');
@@ -2415,6 +2421,87 @@ async function aiIdentifyEditing(btn) {
   }
 }
 
+// ---------- 発売年を AI（Gemini＋Google検索）で調べる ----------
+const googleYearUrl = (c) => `https://www.google.com/search?q=${encodeURIComponent(
+  ['ポケモンカード', c.name, isBox(c) ? '' : c.rarity, isBox(c) ? '' : c.number, '発売日'].filter(Boolean).join(' '))}`;
+
+// カード詳細の発売年欄の下: AI調査の結果（根拠・参照ページ）と、調べるボタン・Google検索リンク
+function yearResearchHtml(c) {
+  const y = c.yearInfo;
+  const conf = { high: '確度 高', medium: '確度 中', low: '確度 低' };
+  return `<div class="fld year-research small">
+    ${y ? `<p>${y.year && y.confidence !== 'low' ? `<span class="badge warn">AI調査</span> ${y.year}年` : y.year ? `AI調査: 候補 ${y.year}年（確度が低いため入力していません）` : 'AI調査: 特定できませんでした'}${y.product ? `（${esc(y.product)}）` : ''} <span class="muted">${conf[y.confidence] || ''}・${esc(String(y.at || '').slice(0, 10))}</span></p>
+      ${y.reason ? `<p class="muted">${esc(y.reason)}</p>` : ''}
+      ${y.sources?.length ? `<p class="muted">参照: ${y.sources.map((s) => `<a href="${esc(s.uri)}" target="_blank" rel="noopener">${esc(s.title)}</a>`).join('、')}</p>` : ''}` : ''}
+    <p><button type="button" class="btn small ghost" data-action="year-ai-one">🤖 AIで発売年を調べる</button>
+      <a href="${esc(googleYearUrl(c))}" target="_blank" rel="noopener">🔎 Googleで調べる</a></p>
+  </div>`;
+}
+
+// 1件を調べて結果をカードに書く（確度が低い・特定できないときは発売年は入れず、記録だけ残す）
+async function researchYearOf(c) {
+  const s = state.settings;
+  const r = await AI.researchYear({
+    apiKey: s.geminiKey, model: s.geminiModel, gameName: s.gameName,
+    card: { ...c, isBox: isBox(c) },
+  });
+  c.yearInfo = { ...r, at: new Date().toISOString() };
+  if (r.year && r.confidence !== 'low') c.releaseYear = r.year;
+  return c;
+}
+
+async function yearAiOne(btn) {
+  const c = state.editing;
+  if (!state.settings.geminiKey) { toast('設定画面で Gemini API キーを入力してください', 'error'); return; }
+  syncForm();
+  btn.disabled = true;
+  btn.textContent = '調査中…（10秒ほど）';
+  try {
+    await researchYearOf(c);
+    renderCardForm();
+    const y = c.yearInfo;
+    toast(y.year && y.confidence !== 'low' ? `発売年を ${y.year}年 にしました（AI調査・保存すると確定します）`
+      : `AIでは発売年を特定できませんでした${y.year ? `（候補 ${y.year}年・確度 低のため入れていません）` : ''}。Googleで調べて手で入力してください`, y.year && y.confidence !== 'low' ? 'ok' : 'info');
+  } catch (e) {
+    toast(e.message, 'error');
+    btn.disabled = false;
+    btn.textContent = '🤖 AIで発売年を調べる';
+  }
+}
+
+// 発売年が不明なカードをまとめて AI で調べる（1件ずつ保存するので途中で止めても調べた分は残る）
+async function yearAiMany(cards) {
+  if (!state.settings.geminiKey) { toast('設定画面で Gemini API キーを入力してください', 'error'); return; }
+  if (state.marketRun) { toast('ほかの取得処理が終わってから実行してください', 'error'); return; }
+  const todo = cards.filter((c) => !c.deleted && !yearOf(c));
+  if (!todo.length) { toast('発売年が不明なカードはありません'); return; }
+  const run = state.marketRun = { label: 'AIで発売年を調査中…', total: todo.length, done: 0, ok: 0, ng: 0, stop: false };
+  renderMarketStatus();
+  try {
+    for (const c0 of todo) {
+      if (run.stop) break;
+      const c = structuredClone(state.cards.find((x) => x.id === c0.id) || c0);
+      try {
+        await researchYearOf(c);
+        await saveCard(c);
+        if (yearOf(c)) run.ok++; else run.ng++;
+      } catch (e) {
+        run.ng++;
+        // キーの誤り・回数制限などはまとめて止める
+        if (/API key|quota|rate|429|403|Gemini エラー: 4/i.test(e.message)) { toast(e.message, 'error'); break; }
+      }
+      run.done++;
+      renderMarketStatus();
+      await new Promise((r) => setTimeout(r, 1500)); // 無料枠の回数制限に当たらないよう間を空ける
+    }
+    toast(`AIで発売年が分かったカード ${run.ok}件${run.ng ? `・特定できず ${run.ng}件（カード詳細の「🔎 Googleで調べる」から手で入力できます）` : ''}${run.stop ? '・中止' : ''}`, run.ng ? 'info' : 'ok');
+  } finally {
+    state.marketRun = null;
+    renderMarketStatus();
+    refreshView();
+  }
+}
+
 // ================= イベント =================
 
 const actions = {
@@ -2446,6 +2533,8 @@ const actions = {
   },
   'market-all': (el) => updateMarket(live('owned'), { force: !!el.dataset.force }),
   'year-lookup': () => lookupYears(state.resultIds.map((id) => state.cards.find((c) => c.id === id)).filter(Boolean)),
+  'year-ai': () => yearAiMany(state.resultIds.map((id) => state.cards.find((c) => c.id === id)).filter(Boolean)),
+  'year-ai-one': (el) => yearAiOne(el),
   'year-selected': () => lookupYears(live().filter((c) => state.selected.has(c.id))),
   'market-selected': () => updateMarket(live('owned').filter((c) => state.selected.has(c.id)), { force: true }),
   'market-stop': () => { if (state.marketRun) state.marketRun.stop = true; },
