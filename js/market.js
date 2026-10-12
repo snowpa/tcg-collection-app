@@ -60,9 +60,10 @@ const isMirrorTok = (t) => /ミラー/.test(t);
 const otherTokens = (x) => x.tokens.filter((t) => !isRarityTok(t) && !isSealedTok(t) && !isEditionTok(t) && !isMirrorTok(t) && !LANG.test(t));
 
 // 鑑定品などは型番が「その他」「※状態難/鑑定カード」になっているので、型番不明として扱う
-const knownModel = (m) => {
+// 未開封商品は型番欄が「未開封BOX」「未開封パック」になっているので、これも型番不明として扱う
+export const knownModel = (m) => {
   const s = String(m || '').trim();
-  return !s || s === 'その他' || s === '-' || /鑑定/.test(s) ? '' : norm(s);
+  return !s || s === 'その他' || s === '-' || /鑑定|未開封|カートン/.test(s) ? '' : norm(s);
 };
 
 const round10 = (n) => Math.round(n / 10) * 10;
@@ -111,7 +112,7 @@ export function matchQuotes(target, items) {
   // 未開封商品は正式名が長いので、完全一致がなければ「名前を含み、型番も含む」商品が1種類だけのときに使う
   let nameOk = (x) => normName(x.base) === normName(own.base);
   if (target.isBox && !list.some(nameOk)) {
-    const sc = norm(target.setCode);
+    const sc = knownModel(target.setCode);
     const loose = list.filter((x) => normName(x.base).includes(normName(own.base)) && (!sc || norm(x.p.name).includes(sc) || knownModel(x.p.setCode) === sc));
     const bases = new Set(loose.map((x) => normName(x.base)));
     if (bases.size === 1) { const b = [...bases][0]; nameOk = (x) => normName(x.base) === b; }
@@ -121,8 +122,8 @@ export function matchQuotes(target, items) {
     || step((x) => !target.number || norm(x.p.number) === norm(target.number),
       (xs) => `番号「${target.number}」の商品が見つかりません（検索結果にある番号: ${uniq(xs.map((x) => x.p.number))}）`)
     // 型番が分かる商品のうち一致するものが1つもなければ、型番違い（鑑定品の「その他」だけで通さない）
-    || step((x) => !target.setCode || knownModel(x.p.setCode) === norm(target.setCode)
-        || (!knownModel(x.p.setCode) && !list.some((y) => knownModel(y.p.setCode) && knownModel(y.p.setCode) !== norm(target.setCode))),
+    || step((x) => !knownModel(target.setCode) || knownModel(x.p.setCode) === knownModel(target.setCode)
+        || (!knownModel(x.p.setCode) && !list.some((y) => knownModel(y.p.setCode) && knownModel(y.p.setCode) !== knownModel(target.setCode))),
       (xs) => `型番「${target.setCode}」の商品が見つかりません（検索結果にある型番: ${uniq(xs.map((x) => knownModel(x.p.setCode) && x.p.setCode))}）`)
     || step((x) => !x.tokens.some((t) => LANG.test(t)) || LANG.test(hint),
       () => '海外版の商品しか見つかりません')

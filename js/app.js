@@ -8,7 +8,7 @@ import * as CR from './cardrush.js';
 import * as MK from './market.js';
 
 // アプリの版（sw.js の CACHE と合わせて更新する。不具合の問い合わせ時に確認用）
-const APP_VERSION = 'v30';
+const APP_VERSION = 'v31';
 
 // ================= 共通ユーティリティ =================
 
@@ -389,6 +389,17 @@ async function loadPhotos(ids) {
 // （レアリティ欄が「未開封BOX」などの旧データ、または番号なし（「-」含む）で名前が未開封商品らしいもの）
 const shouldBeBox = (c) => !isBox(c) && (/^未開封/.test(c.rarity || '')
   || ((!c.number || c.number.trim() === '-') && looksLikeBox(c.name)));
+
+// 型番欄に入ってしまった「未開封BOX」「その他」などの値を一度だけ空にする（カードラッシュの型番欄の値を取り込んでいた頃のデータ）
+async function cleanSetCodes() {
+  if (await db.get('meta', 'cleanedSetCodes')) return 0;
+  const t = nowIso();
+  const changed = state.cards.filter((c) => !c.deleted && c.setCode && !MK.knownModel(c.setCode));
+  changed.forEach((c) => { c.setCode = ''; c.updatedAt = t; });
+  if (changed.length) { await db.putMany('cards', changed); markDirty(); }
+  await db.put('meta', { key: 'cleanedSetCodes', at: t, count: changed.length });
+  return changed.length;
+}
 
 // 未開封商品と思われるカードを、一度だけ未開封BOX・パックへ移す（条件を広げたので v2 として再実行）
 async function migrateBoxes() {
@@ -1891,7 +1902,8 @@ async function applyCardrush(c, item) {
   c.name = p.name || c.name;
   if (p.rarity) c.rarity = p.rarity;
   if (p.number) c.number = p.number;
-  if (p.setCode && p.setCode.toLowerCase() !== String(c.setCode || '').toLowerCase()) {
+  // 「未開封BOX」「その他」など型番でない値は型番欄に入れない
+  if (MK.knownModel(p.setCode) && p.setCode.toLowerCase() !== String(c.setCode || '').toLowerCase()) {
     c.setCode = p.setCode;
     // セット名は登録済みのセットから補う（なければ空にしてセット型番でまとめる）
     c.setName = state.sets.find((m) => !m.deleted && String(m.code).toLowerCase() === p.setCode.toLowerCase())?.name || '';
@@ -2613,6 +2625,7 @@ async function init() {
   if (await migrateCards()) refreshView();
   if (await migrateUnchecked()) refreshView();
   if (await migrateBoxes()) refreshView();
+  if (await cleanSetCodes()) refreshView();
   // 一覧のツールバーをヘッダー（PC ではメニューも）の下に固定する位置
   const stickyTop = () => {
     const nav = $('#nav');
