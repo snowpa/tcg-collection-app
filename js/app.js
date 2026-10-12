@@ -6,10 +6,10 @@ import * as AI from './gemini.js';
 import { lineChart } from './chart.js';
 import * as CR from './cardrush.js';
 import * as MK from './market.js';
-import { yearFromSetCode } from './sets.js';
+import { yearFromSetCode, yearFromName, yearFromNameCode } from './sets.js';
 
 // アプリの版（sw.js の CACHE と合わせて更新する。不具合の問い合わせ時に確認用）
-const APP_VERSION = 'v34';
+const APP_VERSION = 'v35';
 
 // ================= 共通ユーティリティ =================
 
@@ -200,7 +200,9 @@ const marketError = (c) => c.market?.error || marketResult(c)?.error || '';
 const marketValue = (c) => (marketUnit(c) ?? 0) * qty(c);
 // 売却概算 = 相場（カードラッシュ売値）× 売却率。1枚あたり10円単位
 // 発売年: 手で入れた値を優先し、なければシリーズ（セットコード）から自動で出す。分からなければ null
-const autoYearOf = (c) => yearFromSetCode(c.setCode);
+// 型番 → 商品名のかっこ内のコード →（BOX のみ）商品名に含まれる弾の名前、の順に探す
+const autoYearOf = (c) => yearFromSetCode(c.setCode) ?? yearFromNameCode(c.name)
+  ?? (isBox(c) ? yearFromName(`${c.name} ${c.setName || ''}`) : null);
 const yearOf = (c) => (num(c.releaseYear) > 0 ? num(c.releaseYear) : autoYearOf(c));
 const sellPct = () => { const r = num(state.settings.sellRate); return r > 0 && r <= 100 ? r : 70; };
 const sellUnit = (c) => { const m = marketUnit(c); return m === null ? null : Math.round((m * sellPct()) / 1000) * 10; };
