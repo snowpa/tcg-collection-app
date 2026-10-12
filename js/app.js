@@ -1006,7 +1006,7 @@ function viewDashboard() {
           <span class="small">購入額との差 <span class="${sell - pricedCost >= 0 ? 'up' : 'down'}">${sell - pricedCost >= 0 ? '+' : ''}${yen(sell - pricedCost)}</span></span></span>` : ''}
         ${checks.length ? `<span class="small">うち<button class="link" data-action="filter-cond" data-cond="market-check">要確認 ${checks.length}件</button> ${yen(checkValue)}（確認済みの分だけなら 相場 ${yen(market - checkValue)}・売却概算 ${yen(sell - sum(checks, sellValue))}）</span>` : ''}
         <span class="muted small">購入総額 ${yen(cost)}</span></div>
-      <div class="stat"><span class="label">所持数</span><span class="val">${sum(ownedCards, qty)}枚</span><span class="muted small">${ownedCards.length}種類${ownedBoxes.length ? ` ・ BOX等 ${sum(ownedBoxes, qty)}個` : ''}</span></div>
+      <div class="stat"><span class="label">所持数</span><span class="val">${sum(ownedCards, qty)}枚</span><span class="muted small">${ownedCards.length}種類${ownedBoxes.length ? ` ・ <button class="link" data-action="itype" data-itype="box">BOX等 ${sum(ownedBoxes, qty)}個</button>` : ''}</span></div>
       <div class="stat"><span class="label">状態チェック済み</span><span class="val">${checked} / ${ownedCards.length}</span><span class="muted small">カードのみ</span></div>
       <div class="stat"><span class="label">ほしいもの</span><span class="val">${live('wish').length}件</span></div>
     </section>
@@ -1150,6 +1150,7 @@ function viewCollection() {
         <select data-filter="tag" aria-label="タグ" ${tags.length ? '' : 'disabled'}>${opt('', tags.length ? 'タグ: すべて' : 'タグなし', f.tag)}${tags.map((t) => opt(t, `#${t}`, f.tag)).join('')}</select>
       </div>
       <div class="tb-row">
+        <div class="seg" role="group" aria-label="種類">${seg('itype', 'itype', f.itype || '', [['', 'すべて'], ['card', 'カード'], ['box', 'BOX']])}</div>
         <div class="seg" role="group" aria-label="表示形式">${seg('layout', 'layout', f.layout, [['grid', 'グリッド'], ['list', 'リスト']])}</div>
         ${f.layout === 'grid' ? `<div class="seg" role="group" aria-label="カードの大きさ">${seg('density', 'density', f.density, [['l', '大'], ['m', '中'], ['s', '小']])}</div>` : ''}
         <label class="check small"><input type="checkbox" data-filter="group" ${f.group ? 'checked' : ''}> セットごと</label>
@@ -1182,7 +1183,7 @@ function renderResults({ keep = false } = {}) {
   if (fb) fb.innerHTML = `絞り込み${chips.length ? `<span class="count">${chips.length}</span>` : ''}`;
 
   const boxQty = sum(list.filter(isBox), qty);
-  const summary = `<p class="muted small result-sum">${list.length}種類 / ${sum(list, qty) - boxQty}枚${boxQty ? `・BOX等 ${boxQty}個` : ''} ・ 購入額 ${yen(sum(list, cardCost))}${list.some((c) => marketUnit(c) !== null) ? ` ・ 相場 ${yen(sum(list, marketValue))}（売却概算 ${yen(sum(list, sellValue))}）` : ''}</p>`;
+  const summary = `<p class="muted small result-sum">${list.length}種類 / ${[sum(list, qty) - boxQty ? `${sum(list, qty) - boxQty}枚` : '', boxQty ? `BOX等 ${boxQty}個` : ''].filter(Boolean).join('・') || '0枚'} ・ 購入額 ${yen(sum(list, cardCost))}${list.some((c) => marketUnit(c) !== null) ? ` ・ 相場 ${yen(sum(list, marketValue))}（売却概算 ${yen(sum(list, sellValue))}）` : ''}</p>`;
   moreObserver?.disconnect();
   if (!list.length) {
     el.innerHTML = live('owned').length
@@ -2316,6 +2317,13 @@ const actions = {
     toast('購入価格と購入日を確認して保存してください');
   },
   layout: (el) => { state.filters.layout = el.dataset.layout; saveUi(); render(); },
+  // 種類（すべて / カード / BOX）の切り替え。ホームの「BOX等」からも使う
+  itype: (el) => {
+    state.filters.itype = el.dataset.itype || '';
+    saveUi();
+    if (state.view !== 'collection') { state.view = 'collection'; window.scrollTo(0, 0); }
+    render();
+  },
   density: (el) => { state.filters.density = el.dataset.density; saveUi(); render(); },
   'toggle-filters': (el) => {
     state.filtersOpen = !state.filtersOpen;
