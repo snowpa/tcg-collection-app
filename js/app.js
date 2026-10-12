@@ -6,9 +6,10 @@ import * as AI from './gemini.js';
 import { lineChart } from './chart.js';
 import * as CR from './cardrush.js';
 import * as MK from './market.js';
+import { yearFromSetCode } from './sets.js';
 
 // アプリの版（sw.js の CACHE と合わせて更新する。不具合の問い合わせ時に確認用）
-const APP_VERSION = 'v33';
+const APP_VERSION = 'v34';
 
 // ================= 共通ユーティリティ =================
 
@@ -128,7 +129,7 @@ const PAGE = 60;
 
 // 並び順・表示形式などの UI 設定はこの端末に記憶する
 const UI_KEY = 'tcg-collection-ui';
-const DEFAULT_FILTERS = { q: '', set: '', rarity: '', grade: '', tag: '', cond: '', itype: '', sort: 'added-desc', layout: 'grid', density: 'm', group: false };
+const DEFAULT_FILTERS = { q: '', set: '', rarity: '', grade: '', tag: '', cond: '', itype: '', year: '', sort: 'added-desc', layout: 'grid', density: 'm', group: false };
 function loadUi() {
   try { return JSON.parse(localStorage.getItem(UI_KEY) || '{}'); } catch { return {}; }
 }
@@ -198,6 +199,9 @@ const marketUnit = (c) => { const r = marketResult(c); return r && !r.error ? r.
 const marketError = (c) => c.market?.error || marketResult(c)?.error || '';
 const marketValue = (c) => (marketUnit(c) ?? 0) * qty(c);
 // 売却概算 = 相場（カードラッシュ売値）× 売却率。1枚あたり10円単位
+// 発売年: 手で入れた値を優先し、なければシリーズ（セットコード）から自動で出す。分からなければ null
+const autoYearOf = (c) => yearFromSetCode(c.setCode);
+const yearOf = (c) => (num(c.releaseYear) > 0 ? num(c.releaseYear) : autoYearOf(c));
 const sellPct = () => { const r = num(state.settings.sellRate); return r > 0 && r <= 100 ? r : 70; };
 const sellUnit = (c) => { const m = marketUnit(c); return m === null ? null : Math.round((m * sellPct()) / 1000) * 10; };
 const sellValue = (c) => (sellUnit(c) ?? 0) * qty(c);
@@ -653,7 +657,7 @@ const CSV_COLUMNS = [
   ['メモ', (c) => c.memo], ['メールリンク', (c) => c.mailLink],
   ['相場', (c) => marketUnit(c) ?? ''], ['売却概算', (c) => sellUnit(c) ?? ''], ['相場の根拠', (c) => marketError(c) || marketResult(c)?.basis || ''], ['相場取得日', (c) => (c.market?.at || '').slice(0, 10)], ['相場の確認', (c) => marketCheck(c)],
   // 状態チェック
-  ['種類', (c) => (isBox(c) ? '未開封BOX・パック' : 'カード')], ['未開封', (c) => (c.sealed ? '○' : '')], ['状態評価', (c) => condOf(c).overall], ['点検日', (c) => condOf(c).inspectedAt],
+  ['種類', (c) => (isBox(c) ? '未開封BOX・パック' : 'カード')], ['発売年', (c) => yearOf(c) ?? ''], ['未開封', (c) => (c.sealed ? '○' : '')], ['状態評価', (c) => condOf(c).overall], ['点検日', (c) => condOf(c).inspectedAt],
   ['センタリング(表)', (c) => { const r = centeringOf(condOf(c).centering.front, 'front'); return r ? centeringText(r) : ''; }],
   ['センタリング(裏)', (c) => { const r = centeringOf(condOf(c).centering.back, 'back'); return r ? centeringText(r) : ''; }],
   ...DEFECTS.map(([k, l]) => [l, (c) => { const v = condOf(c).defects[k]; return v && v !== 'none' ? SEVERITY_LABEL[v] : ''; }]), // 「なし」は空欄
@@ -970,7 +974,7 @@ function tileHtml(c) {
     </div>
     <div class="tile-body">
       <div class="tile-name">${esc(title(c))}</div>
-      <div class="tile-meta"><span class="tm-text">${esc((isBox(c) ? [c.setCode, c.setName] : [c.rarity, c.setCode, c.number]).filter(Boolean).join(' · ') || ' ')}</span>
+      <div class="tile-meta"><span class="tm-text">${esc((isBox(c) ? [c.setCode, c.setName, yearOf(c) && `${yearOf(c)}年`] : [c.rarity, c.setCode, c.number, yearOf(c) && `${yearOf(c)}年`]).filter(Boolean).join(' · ') || ' ')}</span>
         ${issues ? `<span class="warn-text" title="${esc(condSummary(c))}">要注意 ${issues}</span>` : ''}</div>
       ${c.status !== 'wish' && marketUnit(c) !== null
         ? `<div class="tile-price" title="相場（カードラッシュ販売価格） ／ 売却概算 ${yen(sellUnit(c))}"><span class="tp-label">相場</span><span class="tp-amt">${yen(marketUnit(c))}</span>${gainHtml(c) || '<span></span>'}</div>`
@@ -1101,7 +1105,7 @@ const COND_FILTERS = [
 ];
 const SORTS = [
   ['added-desc', '登録が新しい順'], ['added-asc', '登録が古い順'], ['purchase-desc', '購入日が新しい順'], ['purchase-asc', '購入日が古い順'],
-  ['market-desc', '相場が高い順'], ['market-asc', '相場が低い順'], ['price-desc', '購入価格が高い順'], ['price-asc', '購入価格が低い順'], ['cond', '状態が良い順'], ['name', '名前順'], ['number', 'セット・番号順'],
+  ['market-desc', '相場が高い順'], ['market-asc', '相場が低い順'], ['price-desc', '購入価格が高い順'], ['price-asc', '購入価格が低い順'], ['year-desc', '発売年が新しい順'], ['year-asc', '発売年が古い順'], ['cond', '状態が良い順'], ['name', '名前順'], ['number', 'セット・番号順'],
 ];
 const setLabelOf = (c) => [c.setCode, c.setName].filter(Boolean).join(' ') || 'セット未設定';
 const numOf = (c) => P.parseCardNumber(c.number)?.n ?? 9e9;
@@ -1113,7 +1117,7 @@ function filteredCards() {
     // 空白区切りの AND 検索
     const words = f.q.toLowerCase().split(/\s+/).filter(Boolean);
     list = list.filter((c) => {
-      const text = [c.name, c.rawTitle, c.setName, c.setCode, c.number, c.rarity, c.memo, c.grade, c.shop, c.condition, c.sealed ? '未開封' : '', (c.tags || []).join(' ')].join(' ').toLowerCase();
+      const text = [yearOf(c) ? `${yearOf(c)}年` : '', c.name, c.rawTitle, c.setName, c.setCode, c.number, c.rarity, c.memo, c.grade, c.shop, c.condition, c.sealed ? '未開封' : '', (c.tags || []).join(' ')].join(' ').toLowerCase();
       return words.every((w) => text.includes(w));
     });
   }
@@ -1122,6 +1126,7 @@ function filteredCards() {
   if (f.grade) list = list.filter((c) => (f.grade === 'graded' ? c.grade && c.grade !== '未鑑定' : (c.grade || '未鑑定') === f.grade));
   if (f.tag) list = list.filter((c) => (c.tags || []).includes(f.tag));
   if (f.itype) list = list.filter((c) => (f.itype === 'box' ? isBox(c) : !isBox(c)));
+  if (f.year) list = list.filter((c) => (f.year === 'none' ? !yearOf(c) : String(yearOf(c)) === f.year));
   if (f.cond) {
     list = list.filter((c) => {
       const cond = condOf(c);
@@ -1147,6 +1152,9 @@ function filteredCards() {
     'purchase-asc': (a, b) => String(a.purchaseDate || '9999').localeCompare(String(b.purchaseDate || '9999')),
     'price-desc': (a, b) => num(b.purchasePrice) - num(a.purchasePrice),
     'price-asc': (a, b) => num(a.purchasePrice) - num(b.purchasePrice),
+    // 発売年が分からないものは最後
+    'year-desc': (a, b) => (yearOf(b) ?? -1) - (yearOf(a) ?? -1),
+    'year-asc': (a, b) => (yearOf(a) ?? 9999) - (yearOf(b) ?? 9999),
     // 相場未取得は常に最後
     'market-desc': (a, b) => (marketUnit(b) ?? -1) - (marketUnit(a) ?? -1),
     'market-asc': (a, b) => (marketUnit(a) ?? 9e12) - (marketUnit(b) ?? 9e12),
@@ -1177,6 +1185,7 @@ function activeFilterChips() {
   if (f.cond) chips.push(['cond', `状態: ${new Map(COND_FILTERS).get(f.cond) || f.cond}`]);
   if (f.tag) chips.push(['tag', `#${f.tag}`]);
   if (f.itype) chips.push(['itype', f.itype === 'box' ? '未開封BOX・パック' : 'カード']);
+  if (f.year) chips.push(['year', f.year === 'none' ? '発売年: 不明' : `発売年: ${f.year}年`]);
   return chips;
 }
 
@@ -1199,6 +1208,7 @@ function viewCollection() {
         <select data-filter="rarity" aria-label="レアリティ">${opt('', 'レアリティ: すべて', f.rarity)}${rarities.map((r) => opt(r, r, f.rarity)).join('')}</select>
         <select data-filter="grade" aria-label="鑑定">${opt('', '鑑定: すべて', f.grade)}${opt('graded', '鑑定済みすべて', f.grade)}${grades.map((g) => opt(g, g, f.grade)).join('')}</select>
         <select data-filter="cond" aria-label="状態">${opt('', '状態: すべて', f.cond)}${COND_FILTERS.map(([k, l]) => opt(k, l, f.cond)).join('')}</select>
+        <select data-filter="year" aria-label="発売年">${opt('', '発売年: すべて', f.year)}${[...new Set(owned.map(yearOf).filter(Boolean))].sort((a, b) => b - a).map((y) => opt(String(y), `${y}年`, f.year)).join('')}${opt('none', '発売年: 不明', f.year)}</select>
         <select data-filter="itype" aria-label="種類">${opt('', '種類: すべて', f.itype)}${opt('card', 'カード', f.itype)}${opt('box', '未開封BOX・パック', f.itype)}</select>
         <select data-filter="tag" aria-label="タグ" ${tags.length ? '' : 'disabled'}>${opt('', tags.length ? 'タグ: すべて' : 'タグなし', f.tag)}${tags.map((t) => opt(t, `#${t}`, f.tag)).join('')}</select>
       </div>
@@ -1273,7 +1283,7 @@ function rowHtml(c) {
     ${state.selectMode ? `<td><span class="tick" aria-hidden="true"></span></td>` : ''}
     <td><span class="thumb">${img ? `<img src="${esc(img)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" alt="">` : ''}</span></td>
     <td><strong>${esc(title(c))}</strong>${isBox(c) ? ' <span class="badge sealed-inline">BOX</span>' : ''}<br><span class="muted small">${esc(c.rarity)}</span></td>
-    <td class="small">${esc([c.setCode, c.setName].filter(Boolean).join(' '))}<br>${esc(c.number)}</td>
+    <td class="small">${esc([c.setCode, c.setName].filter(Boolean).join(' '))}<br>${esc([c.number, yearOf(c) && `${yearOf(c)}年`].filter(Boolean).join(' ・ '))}</td>
     <td>${esc(c.grade !== '未鑑定' ? c.grade : '')}${c.sealed ? ' <span class="badge sealed-inline">未開封</span>' : ''}</td>
     <td>${cond.overall ? `<span class="badge rating r-${esc(cond.overall)}">${esc(cond.overall)}</span>` : '<span class="muted small">未評価</span>'}</td>
     <td class="small">${esc(activeDefects(cond).map(([k, l]) => `${l}(${SEVERITY_LABEL[cond.defects[k]]})`).join('、'))}</td>
@@ -2203,6 +2213,7 @@ function renderCardForm() {
           ${isBox(c) ? '' : fld('番号', 'number', c.number, 'text', 'placeholder="198/190"')}
           ${fld(isBox(c) ? '型番' : 'セットコード', 'setCode', c.setCode, 'text', `placeholder="${isBox(c) ? 'SV2a' : 'S4a'}"`)}
           ${fld('セット名', 'setName', c.setName, 'text', 'placeholder="シャイニースターV"')}
+          ${fld('発売年', 'releaseYear', c.releaseYear, 'number', `min="1996" max="2100" step="1" placeholder="${autoYearOf(c) ? `${autoYearOf(c)}（シリーズから自動）` : '例: 2023'}"`)}
           ${isBox(c) ? '' : fld('鑑定', 'grade', c.grade, 'text', 'list="dl-grade"')}
           ${isBox(c) ? '' : `<label class="check fld-check"><input type="checkbox" name="sealed" ${c.sealed ? 'checked' : ''}> 未開封<span class="muted small">（透明パック入りのプロモなど）</span></label>`}
           ${isBox(c) ? `<label class="fld"><span>形態</span><select name="boxKind">${['BOX', 'パック', 'デッキ', 'その他'].map((k) => opt(k, k, c.boxKind || 'BOX')).join('')}</select></label>` : ''}
@@ -2321,7 +2332,7 @@ function syncForm() {
     } else if (k === 'sealed') continue;
     else if (k === 'tags') c.tags = splitList(v);
     else if (k === 'quantity') c.quantity = Math.max(1, Math.floor(num(v)) || 1);
-    else if (k === 'purchasePrice' || k === 'targetPrice') c[k] = v === '' ? '' : num(v);
+    else if (k === 'purchasePrice' || k === 'targetPrice' || k === 'releaseYear') c[k] = v === '' ? '' : num(v);
     else c[k] = typeof v === 'string' ? v.trim() : v;
   }
   const sealed = cardForm().querySelector('[name="sealed"]');
@@ -2522,7 +2533,7 @@ const actions = {
     saveUi();
   },
   'remove-filter': (el) => { state.filters[el.dataset.key] = ''; saveUi(); render(); },
-  'clear-filters': () => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: '', itype: '' }); saveUi(); render(); },
+  'clear-filters': () => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: '', itype: '', year: '' }); saveUi(); render(); },
   'sort-by': (el) => {
     // 列見出しのクリック: 同じ列なら昇順/降順を切り替え
     const keys = el.dataset.sorts.split(',');
@@ -2531,7 +2542,7 @@ const actions = {
     saveUi();
     render();
   },
-  'filter-cond': (el) => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: el.dataset.cond, itype: '' }); saveUi(); state.view = 'collection'; render(); window.scrollTo(0, 0); },
+  'filter-cond': (el) => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: el.dataset.cond, itype: '', year: '' }); saveUi(); state.view = 'collection'; render(); window.scrollTo(0, 0); },
   'toggle-select': () => { state.selectMode = !state.selectMode; state.selected.clear(); render(); },
   'select-all': () => { state.resultIds.forEach((id) => state.selected.add(id)); refreshView(); },
   'select-none': () => { state.selected.clear(); refreshView(); },
