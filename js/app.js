@@ -316,7 +316,13 @@ const marketSig = (c) => [c.name, c.number, c.setCode, c.rarity, c.sealed ? 1 : 
 // 未開封BOX・パック（カード以外の未開封商品）か
 const isBox = (c) => c.itemType === 'box';
 // 商品名から未開封BOX・パックかを推定（フリマの商品名・CSV 用）
-const looksLikeBox = (t) => /(BOX|ボックス|ﾎﾞｯｸｽ|カートン|パック|デッキ|スペシャルセット)/i.test(t || '') && /(未開封|シュリンク)/.test(t || '');
+// 未開封商品らしい語（拡張パック名・BOX・デッキなど）。ただし番号やレアリティを含む名前はカードとみなす
+const BOX_WORDS = /(拡張パック|強化拡張パック|ハイクラスパック|スペシャルパック|プロモカードパック|BOX|ボックス|ﾎﾞｯｸｽ|カートン|スタートデッキ|スターターセット|デッキビルド|構築デッキ|スペシャルセット|カードファイルセット|プレミアムトレーナー|\d+\s*パック)/i;
+const CARD_WORDS = /(\d+\s*\/\s*[\w-]+|(^|[^A-Za-z])(SAR|SR|AR|UR|HR|CHR|CSR|RRR|RR|PSA|BGS|ARS)([^A-Za-z]|$))/i;
+const looksLikeBox = (t) => BOX_WORDS.test(t || '') && !CARD_WORDS.test(t || '');
+// 名前から形態を推定（デッキ / 個数付きのパック / それ以外は BOX）
+const guessBoxKind = (t) => (/(デッキ|スターターセット)/.test(t || '') ? 'デッキ'
+  : /(\d+\s*パック|プロモカードパック)/.test(t || '') && !/(BOX|ボックス)/i.test(t || '') ? 'パック' : 'BOX');
 
 function newCard(preset = {}) {
   return {
@@ -376,6 +382,25 @@ async function loadPhotos(ids) {
 
 // 「未確認」追加前のカードは欠陥が初期値の「なし」で保存されている。
 // 点検日・総合評価・白かけ位置・メモが空で全項目「なし」のカードは未確認とみなして一度だけ移行する
+// 名前が未開封商品らしく番号もないカードを、一度だけ未開封BOX・パックへ移す
+async function migrateBoxes() {
+  if (await db.get('meta', 'migratedBoxes')) return 0;
+  const t = nowIso();
+  const changed = [];
+  for (const c of state.cards) {
+    if (c.deleted || isBox(c) || c.number || !looksLikeBox(c.name)) continue;
+    c.itemType = 'box';
+    c.boxKind = guessBoxKind(c.name);
+    c.sealed = true;
+    c.updatedAt = t;
+    changed.push(c);
+  }
+  if (changed.length) { await db.putMany('cards', changed); markDirty(); }
+  await db.put('meta', { key: 'migratedBoxes', at: t, count: changed.length });
+  if (changed.length) toast(`商品名から ${changed.length}件 を未開封BOX・パックに変更しました`, 'ok');
+  return changed.length;
+}
+
 async function migrateUnchecked() {
   if (await db.get('meta', 'migratedUnchecked')) return 0;
   const t = nowIso();
@@ -678,7 +703,7 @@ async function importCsv(file) {
     const sevByLabel = Object.fromEntries(SEVERITY.map(([k, l]) => [l, k]));
     const posByLabel = Object.fromEntries(Object.entries(WH_LABEL).map(([k, l]) => [l, k]));
     card.sealed = /^(○|◯|1|true|yes|未開封)$/i.test(get(r, '未開封')) || /未開封/.test(rawTitle);
-    if (/BOX|ボックス|パック/i.test(get(r, '種類')) || (!get(r, '種類') && looksLikeBox(rawTitle))) { card.itemType = 'box'; card.sealed = true; }
+    if (/BOX|ボックス|パック/i.test(get(r, '種類')) || (!get(r, '種類') && looksLikeBox(card.name || rawTitle))) { card.itemType = 'box'; card.boxKind = guessBoxKind(card.name || rawTitle); card.sealed = true; }
     card.cond.overall = COND_RATINGS.some(([k]) => k === get(r, '状態評価')) ? get(r, '状態評価') : '';
     card.cond.inspectedAt = normDate(get(r, '点検日'));
     card.cond.note = get(r, '状態詳細メモ');
@@ -823,6 +848,7 @@ async function addCandidates() {
     gmailId: c.gmailId,
     sealed: /未開封/.test(c.rawTitle),
     itemType: looksLikeBox(c.rawTitle) ? 'box' : 'card',
+    boxKind: looksLikeBox(c.rawTitle) ? guessBoxKind(c.rawTitle) : '',
     imageUrl: c.imageUrl,
   }));
   // カードラッシュで照合済みの候補は正式名と画像を反映
@@ -2036,6 +2062,7 @@ function renderCardForm() {
           ${fld('画像URL', 'imageUrl', c.imageUrl, 'url')}
         </div>
       </div>
+      ${!isBox(c) && !c.number && looksLikeBox(c.name) ? '<div class="notice small">未開封BOX・パックの商品名のようです。<button type="button" class="btn small" data-action="to-box">未開封BOX・パックにする</button></div>' : ''}
       ${c.rawTitle ? `<p class="muted small">元の商品名: ${esc(c.rawTitle)}</p>` : ''}
       <label class="fld"><span>メモ</span><textarea name="memo" rows="2">${esc(c.memo)}</textarea></label>
       ${c.status === 'wish' ? '' : marketSectionHtml(c)}
@@ -2275,6 +2302,11 @@ const actions = {
   'clear-image': () => { syncForm(); state.editing.imageData = ''; state.editing.imageUrl = ''; state.editing.thumb = ''; renderCardForm(); },
   'ai-identify': (el) => aiIdentifyEditing(el),
   'cond-today': () => { syncForm(); state.editing.cond.inspectedAt = today(); renderCardForm(); },
+  'to-box': () => {
+    syncForm();
+    Object.assign(state.editing, { itemType: 'box', boxKind: guessBoxKind(state.editing.name), sealed: true, rarity: '', grade: '未鑑定' });
+    renderCardForm();
+  },
   'defects-none': () => {
     syncForm();
     DEFECTS.forEach(([k]) => { if (state.editing.cond.defects[k] === 'unchecked') state.editing.cond.defects[k] = 'none'; });
@@ -2454,6 +2486,11 @@ document.addEventListener('change', (e) => {
   const el = e.target;
   if (el.dataset.change && changeActions[el.dataset.change]) { guard(changeActions[el.dataset.change])(el); return; }
   if (['status', 'sealed', 'itemType'].includes(el.name) && el.closest('#card-form')) { syncForm(); renderCardForm(); return; }
+  // カード名を入れ終えたとき、未開封商品らしければ BOX にする案内を出す
+  if (el.name === 'name' && el.closest('#card-form') && !$('[data-action="to-box"]')) {
+    syncForm();
+    if (!isBox(state.editing) && !state.editing.number && looksLikeBox(state.editing.name)) renderCardForm();
+  }
   if (el.closest('#card-form') && /^(cond\.overall|cond\.defects\.|grade$)/.test(el.name) && $('#market-sec')) {
     syncForm();
     $('#market-sec').outerHTML = marketSectionHtml(state.editing);
@@ -2553,6 +2590,7 @@ async function init() {
   // 旧形式データの移行（写真の分離・サムネイル作成）は表示後に行う
   if (await migrateCards()) refreshView();
   if (await migrateUnchecked()) refreshView();
+  if (await migrateBoxes()) refreshView();
   // 一覧のツールバーをヘッダー（PC ではメニューも）の下に固定する位置
   const stickyTop = () => {
     const nav = $('#nav');
