@@ -105,9 +105,18 @@ code { background: var(--surface2); padding: 1px 5px; border-radius: 4px; font-s
     position: sticky; top: 53px; bottom: auto; display: flex; justify-content: center; gap: 4px;
     border-top: 0; border-bottom: 1px solid var(--border); padding: 4px 16px;
   }
-  .nav-btn { flex-direction: row; font-size: .9rem; padding: 8px 14px; border-radius: 8px; gap: 6px; }
+  .nav-btn { flex-direction: row; font-size: .9rem; padding: 8px 14px; border-radius: 8px; gap: 6px; white-space: nowrap; }
   .nav-btn svg { width: 18px; height: 18px; }
   .nav-btn.on { background: var(--accent-soft); }
+}
+@media (min-width: 1180px) {
+  .app-head { padding-top: calc(6px + env(safe-area-inset-top)); padding-bottom: 6px; }
+  .nav {
+    position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 21;
+    background: none; border-bottom: 0; padding: 0; height: 49px; align-items: center;
+  }
+  .nav-btn { padding: 6px 12px; }
+  .main { padding-top: 12px; }
 }
 
 .main { max-width: 1180px; margin: 0 auto; padding: 16px; }
@@ -362,12 +371,22 @@ img.broken { display: none; }
 @media (max-width: 639px) { .img-box { max-width: 160px; } }
 
 /* ===== 大量のカード向け（ツールバー・追加読み込み・複数選択） ===== */
-.col-toolbar { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; background: var(--bg); }
+.col-toolbar { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; background: var(--bg); }
 @media (min-width: 760px) {
-  .col-toolbar { position: sticky; top: var(--sticky-top, 0px); z-index: 15; padding: 8px 0; margin-top: -8px; border-bottom: 1px solid var(--border); }
+  .col-toolbar { position: sticky; top: var(--sticky-top, 0px); z-index: 15; padding: 6px 0; margin-top: -6px; border-bottom: 1px solid var(--border); }
 }
-.tb-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tb-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .tb-row select { width: auto; }
+/* ツールバーの部品は低めにして、カードの表示領域を広く取る */
+.tb-row .btn, .tb-row select, .tb-row input { min-height: 34px; padding-top: 4px; padding-bottom: 4px; font-size: .85rem; }
+.tb-row .seg button { padding: 6px 10px; }
+.tb-row .grow { flex-basis: 180px; }
+@media (max-width: 560px) {
+  .tb-row .grow { flex-basis: 100%; }
+  .tb-row .seg button { padding: 6px 8px; }
+  .tb-row select { max-width: 132px; }
+  .tb-row .btn { padding-left: 10px; padding-right: 10px; }
+}
 .btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .btn .count { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-text); font-size: .72rem; font-weight: 700; }
 .filter-panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
@@ -386,9 +405,6 @@ img.broken { display: none; }
 .grid.d-s .tile-price { font-size: .72rem; }
 .grid.d-l { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 @media (min-width: 760px) { .grid.d-l { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); } }
-.group-head { grid-column: 1 / -1; margin: 12px 0 0; padding-bottom: 4px; border-bottom: 2px solid var(--border); font-size: .95rem; }
-.group-head:first-child { margin-top: 0; }
-.table .group-row td { background: var(--surface2); font-weight: 700; font-size: .85rem; }
 .more { text-align: center; color: var(--muted); font-size: .8rem; padding: 16px 0 24px; min-height: 1px; }
 
 /* 列見出しで並び替え */

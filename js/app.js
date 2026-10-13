@@ -9,7 +9,7 @@ import * as MK from './market.js';
 import { yearFromSetCode, yearFromName, yearFromNameCode } from './sets.js';
 
 // アプリの版（sw.js の CACHE と合わせて更新する。不具合の問い合わせ時に確認用）
-const APP_VERSION = 'v41';
+const APP_VERSION = 'v42';
 
 // ================= 共通ユーティリティ =================
 
@@ -131,7 +131,7 @@ const PAGE = 60;
 
 // 並び順・表示形式などの UI 設定はこの端末に記憶する
 const UI_KEY = 'tcg-collection-ui';
-const DEFAULT_FILTERS = { q: '', set: '', rarity: '', grade: '', tag: '', cond: '', itype: '', year: '', sort: 'added-desc', layout: 'grid', density: 'm', group: false };
+const DEFAULT_FILTERS = { q: '', rarity: '', grade: '', tag: '', cond: '', itype: '', year: '', sort: 'added-desc', layout: 'grid', density: 'm' };
 function loadUi() {
   try { return JSON.parse(localStorage.getItem(UI_KEY) || '{}'); } catch { return {}; }
 }
@@ -147,7 +147,7 @@ const state = {
   sets: [],
   processed: new Set(), // 取込済み・無視したメールID
   view: 'dashboard',
-  filters: { ...DEFAULT_FILTERS, ...(savedUi.filters || {}), q: '' },
+  filters: (({ set, group, ...f }) => ({ ...DEFAULT_FILTERS, ...f, q: '' }))(savedUi.filters || {}), // 廃止したセット絞り込み・セットごと表示の保存値は捨てる
   filtersOpen: !!savedUi.filtersOpen,
   visible: PAGE, // 一覧で描画済みにする件数
   rendered: 0,
@@ -1117,7 +1117,6 @@ const SORTS = [
   ['added-desc', '登録が新しい順'], ['added-asc', '登録が古い順'], ['purchase-desc', '購入日が新しい順'], ['purchase-asc', '購入日が古い順'],
   ['market-desc', '相場が高い順'], ['market-asc', '相場が低い順'], ['price-desc', '購入価格が高い順'], ['price-asc', '購入価格が低い順'], ['year-desc', '発売年が新しい順'], ['year-asc', '発売年が古い順'], ['cond', '状態が良い順'], ['name', '名前順'], ['number', 'セット・番号順'],
 ];
-const setLabelOf = (c) => [c.setCode, c.setName].filter(Boolean).join(' ') || 'セット未設定';
 const numOf = (c) => P.parseCardNumber(c.number)?.n ?? 9e9;
 
 function filteredCards() {
@@ -1131,7 +1130,6 @@ function filteredCards() {
       return words.every((w) => text.includes(w));
     });
   }
-  if (f.set) list = list.filter((c) => setKey(c) === f.set);
   if (f.rarity) list = list.filter((c) => c.rarity === f.rarity);
   if (f.grade) list = list.filter((c) => (f.grade === 'graded' ? c.grade && c.grade !== '未鑑定' : (c.grade || '未鑑定') === f.grade));
   if (f.tag) list = list.filter((c) => (c.tags || []).includes(f.tag));
@@ -1172,16 +1170,7 @@ function filteredCards() {
     name: (a, b) => title(a).localeCompare(title(b), 'ja'),
     number: (a, b) => setKey(a).localeCompare(setKey(b)) || numOf(a) - numOf(b),
   };
-  const main = by[f.sort] || by['added-desc'];
-  // セットごと表示ではセット単位にまとめる（セット未設定は最後）
-  const group = (a, b) => (!setKey(a) - !setKey(b)) || setLabelOf(a).localeCompare(setLabelOf(b), 'ja');
-  return list.sort(f.group ? (a, b) => group(a, b) || main(a, b) : main);
-}
-
-function setOptions() {
-  const map = new Map();
-  live().forEach((c) => { const k = setKey(c); if (k && !map.has(k)) map.set(k, setLabelOf(c)); });
-  return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ja'));
+  return list.sort(by[f.sort] || by['added-desc']);
 }
 
 const opt = (value, label, cur) => `<option value="${esc(value)}"${value === cur ? ' selected' : ''}>${esc(label)}</option>`;
@@ -1189,7 +1178,6 @@ const opt = (value, label, cur) => `<option value="${esc(value)}"${value === cur
 function activeFilterChips() {
   const f = state.filters;
   const chips = [];
-  if (f.set) chips.push(['set', `セット: ${new Map(setOptions()).get(f.set) || f.set}`]);
   if (f.rarity) chips.push(['rarity', `レアリティ: ${f.rarity}`]);
   if (f.grade) chips.push(['grade', `鑑定: ${f.grade === 'graded' ? '鑑定済み' : f.grade}`]);
   if (f.cond) chips.push(['cond', `状態: ${new Map(COND_FILTERS).get(f.cond) || f.cond}`]);
@@ -1209,27 +1197,22 @@ function viewCollection() {
   return `
     <div class="col-toolbar">
       <div class="tb-row">
-        <input type="search" id="col-search" class="grow" placeholder="検索（名前・セット・番号・タグ）" value="${esc(f.q)}" data-filter="q" aria-label="検索（/ キーでも移動）">
-        <button class="btn${state.filtersOpen ? ' on' : ''}" data-action="toggle-filters" aria-expanded="${state.filtersOpen}" aria-controls="filter-panel">絞り込み</button>
+        <input type="search" id="col-search" class="grow" placeholder="検索（名前・番号・タグ）" value="${esc(f.q)}" data-filter="q" aria-label="検索（/ キーでも移動）">
+        <div class="seg" role="group" aria-label="種類">${seg('itype', 'itype', f.itype || '', [['', 'すべて'], ['card', 'カード'], ['box', 'BOX']])}</div>
+        <div class="seg" role="group" aria-label="表示形式">${seg('layout', 'layout', f.layout, [['grid', 'グリッド'], ['list', 'リスト']])}</div>
+        ${f.layout === 'grid' ? `<div class="seg" role="group" aria-label="カードの大きさ">${seg('density', 'density', f.density, [['l', '大'], ['m', '中'], ['s', '小']])}</div>` : ''}
         <select data-filter="sort" aria-label="並び替え">${SORTS.map(([v, l]) => opt(v, l, f.sort)).join('')}</select>
+        <button class="btn${state.filtersOpen ? ' on' : ''}" data-action="toggle-filters" aria-expanded="${state.filtersOpen}" aria-controls="filter-panel">絞り込み</button>
+        <button class="btn${state.selectMode ? ' on' : ''}" data-action="toggle-select">${state.selectMode ? '選択を終了' : '選択'}</button>
+        <button class="btn primary" data-action="new-card">＋ 追加</button>
       </div>
       <div class="filter-panel" id="filter-panel"${state.filtersOpen ? '' : ' hidden'}>
-        <select data-filter="set" aria-label="セット">${opt('', 'セット: すべて', f.set)}${setOptions().map(([k, l]) => opt(k, l, f.set)).join('')}</select>
         <select data-filter="rarity" aria-label="レアリティ">${opt('', 'レアリティ: すべて', f.rarity)}${rarities.map((r) => opt(r, r, f.rarity)).join('')}</select>
         <select data-filter="grade" aria-label="鑑定">${opt('', '鑑定: すべて', f.grade)}${opt('graded', '鑑定済みすべて', f.grade)}${grades.map((g) => opt(g, g, f.grade)).join('')}</select>
         <select data-filter="cond" aria-label="状態">${opt('', '状態: すべて', f.cond)}${COND_FILTERS.map(([k, l]) => opt(k, l, f.cond)).join('')}</select>
         <select data-filter="year" aria-label="発売年">${opt('', '発売年: すべて', f.year)}${[...new Set(owned.map(yearOf).filter(Boolean))].sort((a, b) => b - a).map((y) => opt(String(y), `${y}年`, f.year)).join('')}${opt('none', '発売年: 不明', f.year)}</select>
         <select data-filter="itype" aria-label="種類">${opt('', '種類: すべて', f.itype)}${opt('card', 'カード', f.itype)}${opt('box', '未開封BOX・パック', f.itype)}</select>
         <select data-filter="tag" aria-label="タグ" ${tags.length ? '' : 'disabled'}>${opt('', tags.length ? 'タグ: すべて' : 'タグなし', f.tag)}${tags.map((t) => opt(t, `#${t}`, f.tag)).join('')}</select>
-      </div>
-      <div class="tb-row">
-        <div class="seg" role="group" aria-label="種類">${seg('itype', 'itype', f.itype || '', [['', 'すべて'], ['card', 'カード'], ['box', 'BOX']])}</div>
-        <div class="seg" role="group" aria-label="表示形式">${seg('layout', 'layout', f.layout, [['grid', 'グリッド'], ['list', 'リスト']])}</div>
-        ${f.layout === 'grid' ? `<div class="seg" role="group" aria-label="カードの大きさ">${seg('density', 'density', f.density, [['l', '大'], ['m', '中'], ['s', '小']])}</div>` : ''}
-        <label class="check small"><input type="checkbox" data-filter="group" ${f.group ? 'checked' : ''}> セットごと</label>
-        <span class="spacer"></span>
-        <button class="btn${state.selectMode ? ' on' : ''}" data-action="toggle-select">${state.selectMode ? '選択を終了' : '選択'}</button>
-        <button class="btn primary" data-action="new-card">＋ 追加</button>
       </div>
       <div id="chips" class="chips-row"></div>
     </div>
@@ -1245,8 +1228,6 @@ function renderResults({ keep = false } = {}) {
   const list = filteredCards();
   state.resultIds = list.map((c) => c.id);
   if (!keep) state.visible = PAGE;
-  state.groupCounts = new Map();
-  if (state.filters.group) list.forEach((c) => state.groupCounts.set(setKey(c), (state.groupCounts.get(setKey(c)) || 0) + 1));
 
   // 絞り込み条件のチップ
   const chips = activeFilterChips();
@@ -1306,14 +1287,6 @@ function rowHtml(c) {
     <td class="small">${esc(c.purchaseDate || '')}</td></tr>`;
 }
 
-function groupHeadHtml(c, isList) {
-  const n = state.groupCounts.get(setKey(c)) || 0;
-  const label = `${esc(setLabelOf(c))} <span class="muted small">${n}種類</span>`;
-  return isList
-    ? `<tr class="group-row"><td colspan="${state.selectMode ? 13 : 12}">${label}</td></tr>`
-    : `<h3 class="group-head">${label}</h3>`;
-}
-
 // list の [描画済み, upto) を末尾に追加する
 function appendRows(list, upto) {
   const rows = $('#rows');
@@ -1325,7 +1298,6 @@ function appendRows(list, upto) {
     let html = '';
     for (let i = from; i < to; i++) {
       const c = list[i];
-      if (state.filters.group && (i === 0 || setKey(c) !== setKey(list[i - 1]))) html += groupHeadHtml(c, isList);
       html += isList ? rowHtml(c) : tileHtml(c);
     }
     rows.insertAdjacentHTML('beforeend', html);
@@ -2576,7 +2548,7 @@ const actions = {
     saveUi();
   },
   'remove-filter': (el) => { state.filters[el.dataset.key] = ''; saveUi(); render(); },
-  'clear-filters': () => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: '', itype: '', year: '' }); saveUi(); render(); },
+  'clear-filters': () => { Object.assign(state.filters, { q: '', rarity: '', grade: '', tag: '', cond: '', itype: '', year: '' }); saveUi(); render(); },
   'sort-by': (el) => {
     // 列見出しのクリック: 同じ列なら昇順/降順を切り替え
     const keys = el.dataset.sorts.split(',');
@@ -2585,7 +2557,7 @@ const actions = {
     saveUi();
     render();
   },
-  'filter-cond': (el) => { Object.assign(state.filters, { q: '', set: '', rarity: '', grade: '', tag: '', cond: el.dataset.cond, itype: '', year: '' }); saveUi(); state.view = 'collection'; render(); window.scrollTo(0, 0); },
+  'filter-cond': (el) => { Object.assign(state.filters, { q: '', rarity: '', grade: '', tag: '', cond: el.dataset.cond, itype: '', year: '' }); saveUi(); state.view = 'collection'; render(); window.scrollTo(0, 0); },
   'toggle-select': () => { state.selectMode = !state.selectMode; state.selected.clear(); render(); },
   'select-all': () => { state.resultIds.forEach((id) => state.selected.add(id)); refreshView(); },
   'select-none': () => { state.selected.clear(); refreshView(); },
