@@ -1774,7 +1774,7 @@ async function commitEditing() {
   const c = state.editing;
   if (!c.name) { toast('カード名を入力してください', 'error'); return false; }
   const isNew = !state.cards.some((x) => x.id === c.id && !x.deleted);
-  // 同じセット・番号・鑑定のカードが登録済みなら枚数をまとめるか確認
+  // 同じセット・番号・名前・レアリティ・鑑定のカードが登録済みなら枚数をまとめるか確認
   if (isNew && c.status === 'owned' && isBox(c) && c.name) {
     const dup = live('owned').find((x) => isBox(x) && MK.normName(x.name) === MK.normName(c.name) && MK.norm(x.setCode) === MK.norm(c.setCode));
     if (dup && confirm(`同じ商品「${title(dup)}」が登録済みです。\n\nOK：登録済みの個数を +${qty(c)} する\nキャンセル：別に登録する`)) {
@@ -1786,7 +1786,10 @@ async function commitEditing() {
     }
   }
   if (isNew && c.status === 'owned' && !isBox(c) && c.number) {
-    const dup = live('owned').find((x) => setKey(x) === setKey(c) && x.number === c.number && (x.grade || '未鑑定') === (c.grade || '未鑑定') && !!x.sealed === !!c.sealed);
+    // セット・番号だけだと、セット未入力同士や版違い（レアリティ違い）で別カードが一致してしまうため、カード名・レアリティも比べる
+    const dup = live('owned').find((x) => !isBox(x) && setKey(x) === setKey(c) && MK.norm(x.number) === MK.norm(c.number)
+      && MK.normName(x.name) === MK.normName(c.name) && MK.norm(x.rarity) === MK.norm(c.rarity)
+      && (x.grade || '未鑑定') === (c.grade || '未鑑定') && !!x.sealed === !!c.sealed);
     if (dup && confirm(`同じカード「${title(dup)}」（${[dup.setCode, dup.number, dup.grade !== '未鑑定' ? dup.grade : ''].filter(Boolean).join(' ')}）が登録済みです。\n\nOK：登録済みのカードの枚数を +${qty(c)} する\nキャンセル：別のカードとして登録する`)) {
       const d = structuredClone(dup);
       d.quantity = qty(d) + qty(c);
