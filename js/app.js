@@ -9,7 +9,7 @@ import * as MK from './market.js';
 import { yearFromSetCode, yearFromName, yearFromNameCode } from './sets.js';
 
 // アプリの版（sw.js の CACHE と合わせて更新する。不具合の問い合わせ時に確認用）
-const APP_VERSION = 'v42';
+const APP_VERSION = 'v43';
 
 // ================= 共通ユーティリティ =================
 
@@ -1534,17 +1534,24 @@ function viewWish() {
   return `
     <div class="toolbar">
       <input type="search" class="grow" placeholder="ほしいものを検索" value="${esc(state.wishQ)}" data-filter="wishQ" aria-label="検索">
+      <button class="btn small" data-action="market-all" data-scope="wish">相場を更新</button>
       <button class="btn primary" data-action="new-card" data-status="wish">＋ ほしいものを追加</button>
     </div>
     ${list.length ? `<div class="wish-list">${list.map((c) => {
       const target = num(c.targetPrice);
+      const mk = marketUnit(c);
+      // 相場が目標価格以下なら買い時として強調する
+      const hit = target > 0 && mk !== null && mk <= target;
       const img = thumbOf(c);
       return `<div class="wish-row">
         <button class="wish-main" data-action="open-card" data-id="${c.id}">
           <span class="thumb">${img ? `<img src="${esc(img)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}</span>
           <span class="wish-info"><strong>${esc(title(c))}</strong>
             <span class="muted small">${esc([c.rarity, c.setCode, c.number, c.grade !== '未鑑定' ? c.grade : ''].filter(Boolean).join(' · '))}</span></span>
-          <span class="wish-prices"><span class="small muted">目標</span> ${yen(target || null)}</span>
+          <span class="wish-prices">
+            <span title="相場（カードラッシュ販売価格）${marketError(c) ? ` ／ ${esc(marketError(c))}` : ''}"><span class="small muted">相場</span> ${yen(mk)}${hit ? ' <span class="badge ok">目標以下</span>' : ''}</span>
+            <span><span class="small muted">目標</span> ${yen(target || null)}</span>
+          </span>
         </button>
         <button class="btn small" data-action="got-wish" data-id="${c.id}">入手した</button>
       </div>`;
@@ -1800,8 +1807,8 @@ async function commitEditing() {
   if (put.length || del.length) await db.putMany('photos', [...put, ...del]);
   await saveCard(c);
   state.editingOrig = JSON.stringify(c);
-  // 所持カードの相場（カードラッシュの価格一覧）は保存後に裏で取得する（保存の操作を待たせない）
-  if (c.status === 'owned' && c.name && marketNeedsFetch(c)) queueMarket(c.id);
+  // 相場（カードラッシュの価格一覧）は保存後に裏で取得する（保存の操作を待たせない）。ほしいものも対象
+  if (c.name && marketNeedsFetch(c)) queueMarket(c.id);
   return true;
 }
 
@@ -1964,7 +1971,7 @@ async function processMarketQueue() {
       renderMarketStatus();
       const id = marketQueue[0];
       const c0 = state.cards.find((x) => x.id === id && !x.deleted);
-      if (c0 && c0.status === 'owned' && marketNeedsFetch(c0)) {
+      if (c0 && marketNeedsFetch(c0)) {
         try {
           const market = await fetchMarket(c0);
           // 取得中に編集・保存されていても、最新のカードに相場だけを反映する
@@ -2055,15 +2062,16 @@ async function applyCardrush(c, item) {
   }
   if (p.sealed) c.sealed = true;
   if (p.sealedProduct) { c.itemType = 'box'; c.boxKind = p.sealedProduct.replace(/^未開封/, '') || 'BOX'; c.rarity = ''; c.number = ''; }
-  c.cardrushId = item.id;
-  c.cardrushUrl = item.url;
+  // 遊々亭の商品はカードラッシュの商品IDとURLを上書きせず、商品ページのURLだけ別に持つ
+  if (item.source === 'yuyutei') c.yuyuteiUrl = item.url;
+  else { c.cardrushId = item.id; c.cardrushUrl = item.url; }
   c.imageUrl = item.image;
   try {
     c.imageData = await resizeImage(await CR.imageDataUrl(item.image), 800);
     c.thumb = await makeThumb(c.imageData);
   } catch (e) {
     // 画像だけ取れない場合は直リンク表示にする
-    console.warn('カードラッシュ画像の取得失敗', e);
+    console.warn('画像の取得失敗', e);
     c.imageData = '';
     c.thumb = item.thumb || '';
   }
@@ -2081,9 +2089,12 @@ async function updateCrStatus() {
   }
 }
 
+const SITE_NAME = { cr: 'カードラッシュ', yy: '遊々亭' };
+
 // queries: 自動で順に試す検索語（見つかった時点で止める）
-function openCrPicker({ queries = [], number = '', heading = 'カードラッシュから選ぶ', onPick }) {
-  state.cr = { q: queries[0] || '', number, heading, onPick, items: [], total: 0, page: 0, loading: false, error: '', note: '' };
+// site: 'cr'＝カードラッシュ、'yy'＝遊々亭
+function openCrPicker({ queries = [], number = '', heading = '', site = 'cr', onPick }) {
+  state.cr = { q: queries[0] || '', number, heading: heading || `${SITE_NAME[site]}から選ぶ`, site, onPick, items: [], total: 0, page: 0, loading: false, error: '', note: '' };
   renderCrPicker();
   if (!$('#cr-dialog').open) $('#cr-dialog').showModal();
   if (queries.length) guard(crSearch)(1, queries);
@@ -2100,9 +2111,10 @@ async function crSearch(page, fallbacks = null) {
   try {
     const tries = fallbacks || [cr.q];
     let r = { items: [], total: 0 };
+    if (cr.site === 'yy' && verNum(await CR.ping()) < verNum('1.3.0')) throw new Error('遊々亭を検索するには拡張機能を v1.3.0 以上に更新してください（chrome://extensions で再読み込み）');
     for (const q of tries) {
       cr.q = q;
-      r = await CR.search(q, page);
+      r = cr.site === 'yy' ? await CR.yySearch(q) : await CR.search(q, page);
       if (state.cr !== cr) return; // 途中で閉じた・検索し直した
       if (r.items.length) break;
     }
@@ -2133,7 +2145,7 @@ function renderCrPicker() {
       <button type="button" class="icon-btn" data-action="cr-close" aria-label="閉じる">×</button></header>
     <div class="dlg-body">
       <form class="row" id="cr-form" style="margin-top:0">
-        <input id="cr-q" class="grow" type="search" lang="ja" autocomplete="off" value="${esc(cr.q)}" placeholder="カード名（例: マリィ SR）" aria-label="カードラッシュで検索">
+        <input id="cr-q" class="grow" type="search" lang="ja" autocomplete="off" value="${esc(cr.q)}" placeholder="カード名（例: マリィ SR）" aria-label="${SITE_NAME[cr.site]}で検索">
         <button class="btn primary" type="submit">検索</button>
       </form>
       ${cr.note ? `<p class="small">${esc(cr.note)}</p>` : ''}
@@ -2148,23 +2160,24 @@ function renderCrPicker() {
             <span class="cr-badges">${hit ? '<span class="badge ok">番号一致</span>' : ''}${used ? `<span class="badge warn">${esc(p.condRank)}</span>` : ''}${sold ? '<span class="badge">売切</span>' : ''}</span>
           </button>`).join('')}</div>
         ${cr.items.length < cr.total ? `<div class="row center"><button type="button" class="btn" data-action="cr-more" ${cr.loading ? 'disabled' : ''}>もっと見る</button></div>` : ''}`
-      : cr.loading ? '' : cr.page ? '<p class="muted">見つかりませんでした。キーワードを短くしてみてください（例: カード名だけ）。</p>' : ''}
+      : cr.loading ? '' : cr.page ? `<p class="muted">見つかりませんでした。キーワードを短くしてみてください（例: カード名だけ）。</p>${cr.site === 'cr' ? '<div class="row center"><button type="button" class="btn small" data-action="cr-to-yy">遊々亭で探す</button></div>' : ''}` : ''}
       ${cr.loading ? '<p class="muted small" aria-live="polite">検索中…</p>' : ''}
     </div>
     <footer class="dlg-foot">
-      <span class="muted small">画像・名称の出典: カードラッシュ</span><span class="spacer"></span>
+      <span class="muted small">画像・名称の出典: ${SITE_NAME[cr.site]}</span><span class="spacer"></span>
       ${walk ? '<button type="button" class="btn ghost" data-action="cr-walk-end">照合を終了</button><button type="button" class="btn" data-action="cr-skip">このカードを飛ばす</button>' : '<button type="button" class="btn ghost" data-action="cr-close">閉じる</button>'}
     </footer>`;
 }
 
-// 編集中のカードに対して検索を開く
-function openCrForEditing() {
+// 編集中のカードに対して検索を開く（site: 'cr'＝カードラッシュ、'yy'＝遊々亭）
+function openCrForEditing(site = 'cr') {
   const c = state.editing;
   const pos = state.navIds.indexOf(c.id);
   openCrPicker({
     queries: isBox(c) ? CR.boxQueries(c.name || c.rawTitle) : CR.queryCandidates(c.name && c.name !== c.rawTitle ? c.name : c.rawTitle || c.name, c.number),
     number: c.number,
-    heading: state.crWalk && pos >= 0 ? `カードラッシュで照合（${pos + 1} / ${state.navIds.length}）` : 'カードラッシュから選ぶ',
+    site,
+    heading: state.crWalk && pos >= 0 ? `${SITE_NAME[site]}で照合（${pos + 1} / ${state.navIds.length}）` : '',
     onPick: async (item) => {
       syncForm();
       await applyCardrush(state.editing, item);
@@ -2177,7 +2190,7 @@ function openCrForEditing() {
         if (pos >= 0 && pos < state.navIds.length - 1) await goCard(1);
         else { state.crWalk = false; renderCardForm(); toast('照合が終わりました', 'ok'); }
       } else {
-        toast('カードラッシュの情報を反映しました。内容を確認して保存してください', 'ok');
+        toast(`${item.source === 'yuyutei' ? '遊々亭' : 'カードラッシュ'}の情報を反映しました。内容を確認して保存してください`, 'ok');
       }
     },
   });
@@ -2214,8 +2227,10 @@ function renderCardForm() {
           <label class="btn small">画像を選択<input type="file" accept="image/*" data-change="pick-image" hidden></label>
           ${img ? '<button type="button" class="btn small ghost" data-action="clear-image">画像を外す</button>' : ''}
           <button type="button" class="btn small" data-action="cr-card">🔎 カードラッシュから取得</button>
+          <button type="button" class="btn small" data-action="yy-card">🔎 遊々亭から取得</button>
           ${isBox(c) ? '' : '<button type="button" class="btn small ghost" data-action="ai-identify">✨ AIでカード判定</button>'}
           ${c.cardrushUrl ? `<a class="small" href="${esc(c.cardrushUrl)}" target="_blank" rel="noopener">カードラッシュで見る</a>` : ''}
+          ${c.yuyuteiUrl ? `<a class="small" href="${esc(c.yuyuteiUrl)}" target="_blank" rel="noopener">遊々亭で見る</a>` : ''}
           ${c.mailLink ? `<a class="small" href="${esc(c.mailLink)}" target="_blank" rel="noopener">購入メールを開く</a>` : ''}
         </div>
         <div class="grid2">
@@ -2241,7 +2256,7 @@ function renderCardForm() {
       ${shouldBeBox(c) ? '<div class="notice small">未開封BOX・パックの商品名のようです。<button type="button" class="btn small" data-action="to-box">未開封BOX・パックにする</button></div>' : ''}
       ${c.rawTitle ? `<p class="muted small">元の商品名: ${esc(c.rawTitle)}</p>` : ''}
       <label class="fld"><span>メモ</span><textarea name="memo" rows="2">${esc(c.memo)}</textarea></label>
-      ${c.status === 'wish' ? '' : marketSectionHtml(c)}
+      ${marketSectionHtml(c)}
 
       ${c.status === 'wish' ? '' : condSectionHtml(c)}
     </div>
@@ -2406,6 +2421,7 @@ const actions = {
   },
   'close-card': () => closeCard(),
   'cr-card': () => { syncForm(); openCrForEditing(); },
+  'yy-card': () => { syncForm(); openCrForEditing('yy'); },
   'market-one': async (el) => {
     syncForm();
     el.disabled = true;
@@ -2416,7 +2432,7 @@ const actions = {
       toast(state.editing.market.error ? '相場を取得できませんでした' : '相場を取得しました。保存すると反映されます', state.editing.market.error ? 'error' : 'ok');
     } finally { el.disabled = false; }
   },
-  'market-all': (el) => updateMarket(live('owned'), { force: !!el.dataset.force }),
+  'market-all': (el) => updateMarket(live(el.dataset.scope || 'owned'), { force: !!el.dataset.force }),
   'year-lookup': () => lookupYears(state.resultIds.map((id) => state.cards.find((c) => c.id === id)).filter(Boolean)),
   'year-selected': () => lookupYears(live().filter((c) => state.selected.has(c.id))),
   'market-selected': () => updateMarket(live('owned').filter((c) => state.selected.has(c.id)), { force: true }),
@@ -2435,10 +2451,16 @@ const actions = {
     const item = cr.items[Number(el.dataset.idx)];
     $('#cr-dialog').close();
     state.cr = null;
-    if (cardDlg().open) toast('カードラッシュから取得中…');
+    if (cardDlg().open) toast(`${SITE_NAME[cr.site]}から取得中…`);
     await cr.onPick(item);
   },
   'cr-more': () => crSearch(state.cr.page + 1),
+  // カードラッシュで見つからなかった検索語のまま、遊々亭で探し直す
+  'cr-to-yy': () => {
+    const cr = state.cr;
+    const heading = cr.heading.replace(/^カードラッシュ/, '遊々亭');
+    openCrPicker({ queries: [cr.q], number: cr.number, heading, site: 'yy', onPick: cr.onPick });
+  },
   'cr-close': () => { state.cr = null; $('#cr-dialog').close(); },
   'cr-skip': async () => { state.cr = null; $('#cr-dialog').close(); if (state.navIds.indexOf(state.editing.id) < state.navIds.length - 1) await goCard(1); else state.crWalk = false; },
   'cr-walk-end': () => { state.crWalk = false; state.cr = null; $('#cr-dialog').close(); },

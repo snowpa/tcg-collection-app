@@ -19,6 +19,7 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
 async function handle(msg) {
   if (msg.action === 'search') return search(String(msg.q || ''), Number(msg.page || 1));
   if (msg.action === 'h2search') return h2Search(String(msg.q || ''));
+  if (msg.action === 'yysearch') return yySearch(String(msg.q || ''));
   if (msg.action === 'image') return image(String(msg.path || ''));
   if (msg.action === 'open') {
     // ボット確認画面が出たとき用に、カードラッシュをタブで開く
@@ -120,6 +121,73 @@ function crText(s) {
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// ---------- 遊々亭（カード追加時にカードラッシュ以外から選ぶ用） ----------
+// 検索結果は1ページにすべて出る。問い合わせは最低1秒あけて1件ずつ行い、結果は6時間キャッシュする
+const YY_BASE = 'https://yuyu-tei.jp';
+const YY_INTERVAL_MS = 1000;
+let yyChain = Promise.resolve();
+let yyLast = 0;
+
+function yySearch(q) {
+  q = q.trim();
+  if (!q) return Promise.resolve({ items: [], total: 0, page: 1 });
+  const key = `yy|${q}`;
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < CACHE_MS) return Promise.resolve(hit.data);
+  const run = yyChain.then(async () => {
+    const waitMs = yyLast + YY_INTERVAL_MS - Date.now();
+    if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+    yyLast = Date.now();
+    const res = await fetch(`${YY_BASE}/sell/poc/s/search?search_word=${encodeURIComponent(q)}`, { credentials: 'include' });
+    if (res.status === 429) throw new Error('遊々亭のアクセス制限中です。しばらく（数分）待ってから再試行してください。');
+    if (!res.ok) throw new Error(`遊々亭へのアクセスに失敗しました（HTTP ${res.status}）`);
+    const data = parseYuyuteiList(await res.text());
+    cache.set(key, { at: Date.now(), data });
+    if (cache.size > 300) cache.delete(cache.keys().next().value);
+    return data;
+  });
+  yyChain = run.catch(() => {}); // 失敗しても次の問い合わせは続ける
+  return run;
+}
+
+// 検索結果ページはレアリティごとの見出し（cards-list）の下に商品が並ぶ。カードラッシュと同じ形（名前【レアリティ】{番号}）に変換する
+function parseYuyuteiList(html) {
+  const items = [];
+  for (const section of html.split('class="py-4 cards-list"').slice(1)) {
+    const rarity = crText((section.match(/<span\s+class="py-2[^"]*">([^<]*)<\/span>\s*Card List/) || [])[1] || '');
+    for (const block of section.split('class="card-product position-relative').slice(1)) {
+      const link = block.match(/href="(https:\/\/yuyu-tei\.jp\/sell\/poc\/card\/([\w-]+)\/(\d+))"/);
+      const name = crText((block.match(/<h4[^>]*>([\s\S]*?)<\/h4>/) || [])[1] || '');
+      if (!link || !name) continue;
+      const number = crText((block.match(/<span\s+class="d-block border[^"]*">([^<]*)<\/span>/) || [])[1] || '');
+      const price = Number(((block.match(/<strong[^>]*>\s*([\d,]+)\s*円/) || [])[1] || '0').replace(/,/g, ''));
+      const stock = Number((crText((block.match(/cart_sell_zaiko"[^>]*>([\s\S]*?)<\/label>/) || [])[1] || '').match(/(\d+)\s*点/) || [])[1] || 0);
+      const img = (block.match(/src="(https:\/\/card\.yuyu-tei\.jp\/poc\/)100_140(\/[^"]+)"/) || []);
+      items.push({
+        id: `yy-${link[2]}-${link[3]}`,
+        // 「TD」「S-TD」は遊々亭の分類（構築デッキ収録）でレアリティではないので空にする
+        name: `${name}【${rarity && !/^(-|S?-?TD)$/.test(rarity) ? rarity : '-'}】{${number || '-'}}`,
+        model: yyModel(link[2]),
+        thumb: img[1] ? `${img[1]}200_280${img[2]}` : '',
+        image: img[1] ? `${img[1]}front${img[2]}` : '',
+        url: link[1],
+        price,
+        stock,
+        source: 'yuyutei',
+        soldOut: /^\s*sold-out/.test(block.slice(0, 20)) || !stock,
+      });
+      if (items.length >= 200) break;
+    }
+  }
+  return { items, total: items.length, page: 1 };
+}
+
+// 遊々亭のバージョン記号（s04a, sv02a, m02a）を型番（s4a, sv2a, m2a）にする。プロモ・デッキなど独自の記号は空にする
+function yyModel(ver) {
+  const m = String(ver).match(/^(s|sv|m)0*(\d+)([a-z]?)$/i);
+  return m ? `${m[1]}${m[2]}${m[3]}` : '';
 }
 
 // ---------- 晴れる屋2（カードラッシュで見つからないときの予備） ----------

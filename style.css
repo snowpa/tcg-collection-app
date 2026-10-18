@@ -247,7 +247,7 @@ img.broken { display: none; }
 .wish-row { display: flex; gap: 8px; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; }
 .wish-main { flex: 1; min-width: 0; display: flex; gap: 12px; align-items: center; background: none; border: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; padding: 0; }
 .wish-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.wish-prices { text-align: right; font-variant-numeric: tabular-nums; font-size: .88rem; }
+.wish-prices { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; font-variant-numeric: tabular-nums; font-size: .88rem; white-space: nowrap; }
 
 /* ===== 取り込み候補 ===== */
 .cand-list { display: flex; flex-direction: column; gap: 6px; }

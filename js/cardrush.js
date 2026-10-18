@@ -38,12 +38,27 @@ export const search = (q, page = 1) => call({ action: 'search', q, page });
 
 // 画像を dataURL で取得
 export async function imageDataUrl(imageUrl) {
+  // 遊々亭の画像は CORS が許可されているので直接取得する
+  if (new URL(imageUrl).hostname === 'card.yuyu-tei.jp') {
+    const res = await fetch(imageUrl);
+    if (!res.ok) throw new Error(`遊々亭の画像の取得に失敗しました（HTTP ${res.status}）`);
+    const blob = await res.blob();
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = () => reject(fr.error);
+      fr.readAsDataURL(blob);
+    });
+  }
   const r = await call({ action: 'image', path: new URL(imageUrl).pathname });
   return `data:${r.mimeType};base64,${r.base64}`;
 }
 
 // 晴れる屋2を検索する（カードラッシュで見つからないときの予備。拡張機能 v1.2.0 以上）
 export const h2Search = (q) => call({ action: 'h2search', q }, 60000);
+
+// 遊々亭を検索する（カード追加で選ぶ用。拡張機能 v1.3.0 以上）
+export const yySearch = (q) => call({ action: 'yysearch', q }, 60000);
 
 // ボット確認が出たときにカードラッシュをタブで開く
 export const openSite = () => call({ action: 'open' });
