@@ -57,7 +57,9 @@ const isSealedTok = (t) => /未開封/.test(t);
 const isFirstTok = (t) => /^(1ED|1ST)/i.test(t.normalize('NFKC'));
 const isEditionTok = (t) => isFirstTok(t) || /^(アンリミ|アンリミテッド|unlimited)$/i.test(t);
 const isMirrorTok = (t) => /ミラー/.test(t);
-const otherTokens = (x) => x.tokens.filter((t) => !isRarityTok(t) && !isSealedTok(t) && !isEditionTok(t) && !isMirrorTok(t) && !LANG.test(t));
+// ミラーの種類: 「モンスターボールミラー」→「モンスターボール」、単なる「ミラー」やミラーなしは空文字
+const mirrorKind = (x) => norm(x.tokens.find(isMirrorTok) || '').replace(/ミラー.*$/, '');
+const otherTokens =(x) => x.tokens.filter((t) => !isRarityTok(t) && !isSealedTok(t) && !isEditionTok(t) && !isMirrorTok(t) && !LANG.test(t));
 
 // 鑑定品などは型番が「その他」「※状態難/鑑定カード」になっているので、型番不明として扱う
 // 未開封商品は型番欄が「未開封BOX」「未開封パック」になっているので、これも型番不明として扱う
@@ -146,15 +148,24 @@ export function matchQuotes(target, items) {
   }
   const hasMirror = (x) => x.tokens.some(isMirrorTok);
   if (list.some(hasMirror)) {
-    const want = /ミラー|モンスターボール|マスターボール/.test(hint);
+    const want = /ミラー|ボール/.test(hint);
     const f = list.filter((x) => hasMirror(x) === want);
     if (f.length) list = f;
+  }
+  // ミラーの種類（モンスターボール／マスターボールなど）も区別する（種類違いは価格が大きく違う）
+  const kinds = new Set(list.map(mirrorKind).filter(Boolean));
+  const wantKinds = [...kinds].filter((k) => hint.includes(k));
+  if (wantKinds.length) list = list.filter((x) => wantKinds.includes(mirrorKind(x)));
+  else {
+    // 手がかりにある「◯◯ボールミラー」の商品がなければ、別の種類で代用せずエラーにする
+    const want = hint.match(/([ァ-ヶー]+ボール)ミラー/)?.[1];
+    if (want) return { error: `「${want}ミラー」の商品が見つかりません${kinds.size ? `（検索結果にあるミラー: ${[...kinds].map((k) => `${k}ミラー`).join('、')}）` : ''}` };
   }
   const fits = (x) => otherTokens(x).every((t) => hint.includes(norm(t)));
   if (list.some(fits)) list = list.filter(fits);
 
   // 番号・型番・バリエーションが違うものが残っていると特定できない
-  const variantKey = (x) => [norm(x.p.number), knownModel(x.p.setCode), otherTokens(x).map(norm).sort().join('/'), has1st(x), hasMirror(x)].join('|');
+  const variantKey = (x) => [norm(x.p.number), knownModel(x.p.setCode), otherTokens(x).map(norm).sort().join('/'), has1st(x), hasMirror(x), mirrorKind(x)].join('|');
   const keyed = list.filter((x) => knownModel(x.p.setCode) || !list.some((y) => knownModel(y.p.setCode)));
   const variants = new Set(keyed.map(variantKey));
   if (variants.size > 1) {
