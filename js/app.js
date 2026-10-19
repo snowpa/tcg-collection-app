@@ -318,9 +318,16 @@ function condSummary(c) {
   return ds.length ? ds.join('・') : cond.inspectedAt ? '目立つ欠陥なし' : '';
 }
 
+// ほしいものの希望の状態（指定した状態以上なら可）
+const WANT_RANKS = [['A', 'A（美品）'], ['B', 'B（やや傷あり）'], ['C', 'C（傷あり）']];
+// 希望の状態 → 相場に使う総合評価（A=無印、B=状態B、C=状態C の販売価格）
+const WANT_RATING = { A: 'A', B: 'C', C: 'D' };
+
 // 相場の計算に使う総合評価（S〜D）。未評価なら欠陥の程度から推定する
 // （欠陥なし→S=通常、軽微→B=状態A-、目立つ→C=状態B、重度・折れ/へこみ→D=状態C）
 function ratingOf(c) {
+  // ほしいものは希望の状態（A〜C）から決める
+  if (c.status === 'wish' && WANT_RATING[c.wantRank]) return WANT_RATING[c.wantRank];
   const cond = condOf(c);
   if (MK.RATING_RANK[cond.overall]) return cond.overall;
   const sev = activeDefects(cond).map(([k]) => cond.defects[k]);
@@ -352,7 +359,7 @@ function newCard(preset = {}) {
     name: '', rawTitle: '', rarity: '', setCode: '', setName: '', number: '',
     itemType: 'card', // card=カード / box=未開封BOX・パック
     quantity: 1, condition: '', grade: '未鑑定', sealed: false,
-    purchaseDate: today(), purchasePrice: '', shop: '', targetPrice: '',
+    purchaseDate: today(), purchasePrice: '', shop: '', targetPrice: '', wantRank: '',
     mailLink: '', gmailId: '', imageUrl: '', imageData: '',
     cond: emptyCond(), tags: [], memo: '',
     createdAt: nowIso(), updatedAt: nowIso(),
@@ -663,7 +670,7 @@ const CSV_COLUMNS = [
   ['セットコード', (c) => c.setCode], ['セット名', (c) => c.setName], ['番号', (c) => c.number],
   ['枚数', (c) => qty(c)], ['状態メモ', (c) => c.condition], ['鑑定', (c) => c.grade],
   ['購入日', (c) => c.purchaseDate], ['金額', (c) => c.purchasePrice], ['購入先', (c) => c.shop],
-  ['目標価格', (c) => c.targetPrice], ['タグ', (c) => (c.tags || []).join(' ')],
+  ['目標価格', (c) => c.targetPrice], ['希望の状態', (c) => c.wantRank || ''], ['タグ', (c) => (c.tags || []).join(' ')],
   ['メモ', (c) => c.memo], ['メールリンク', (c) => c.mailLink],
   ['相場', (c) => marketUnit(c) ?? ''], ['売却概算', (c) => sellUnit(c) ?? ''], ['相場の根拠', (c) => marketError(c) || marketResult(c)?.basis || ''], ['相場取得日', (c) => (c.market?.at || '').slice(0, 10)], ['相場の確認', (c) => marketCheck(c)],
   // 状態チェック
@@ -734,6 +741,7 @@ async function importCsv(file) {
       purchasePrice: num(get(r, '金額')) || '',
       shop: get(r, '購入先'),
       targetPrice: num(get(r, '目標価格')) || '',
+      wantRank: WANT_RATING[get(r, '希望の状態')] ? get(r, '希望の状態') : '',
       tags: splitList(get(r, 'タグ').replace(/\s+/g, ',')),
       memo: get(r, 'メモ'),
       mailLink: link,
@@ -988,7 +996,7 @@ function tileHtml(c) {
         ${issues ? `<span class="warn-text" title="${esc(condSummary(c))}">要注意 ${issues}</span>` : ''}</div>
       ${c.status !== 'wish' && marketUnit(c) !== null
         ? `<div class="tile-price" title="相場（カードラッシュ販売価格） ／ 売却概算 ${yen(sellUnit(c))}"><span class="tp-label">相場</span><span class="tp-amt">${yen(marketUnit(c))}</span>${gainHtml(c) || '<span></span>'}</div>`
-        : `<div class="tile-price"><span class="tp-label">${c.status === 'wish' ? '目標' : '購入'}</span><span class="tp-amt">${yen(c.status === 'wish' ? c.targetPrice || null : c.purchasePrice || null)}</span><span></span></div>`}
+        : `<div class="tile-price"><span class="tp-label">${c.status === 'wish' ? '予算' : '購入'}</span><span class="tp-amt">${yen(c.status === 'wish' ? c.targetPrice || null : c.purchasePrice || null)}</span><span></span></div>`}
     </div>
   </button>`;
 }
@@ -1527,10 +1535,13 @@ async function gradingSearch(page) {
 
 // ---------- ほしいもの ----------
 
-// カード名でメルカリを検索するURL（販売中の商品に絞る）。カード名が未入力なら表示名で代用する
+// カード名でメルカリを検索するURL（販売中・匿名配送の商品に絞る）。カード名が未入力なら表示名で代用する
+// 予算があれば上限価格で絞る。メルカリの商品状態は出品者の主観でばらつくため、状態では絞らない
 function mercariSearchUrl(c) {
   const keyword = String(c.name || title(c) || '').trim();
-  return `https://jp.mercari.com/search?keyword=${encodeURIComponent(keyword)}&status=on_sale`;
+  const params = new URLSearchParams({ keyword, status: 'on_sale', shipping_method: 'ANONYMOUS' });
+  if (num(c.targetPrice) > 0) params.set('price_max', String(num(c.targetPrice)));
+  return `https://jp.mercari.com/search?${params}`;
 }
 
 function viewWish() {
@@ -1546,23 +1557,23 @@ function viewWish() {
     ${list.length ? `<div class="wish-list">${list.map((c) => {
       const target = num(c.targetPrice);
       const mk = marketUnit(c);
-      // 相場が目標価格以下なら買い時として強調する
+      // 相場が予算以下なら買い時として強調する
       const hit = target > 0 && mk !== null && mk <= target;
       const img = thumbOf(c);
       return `<div class="wish-row">
         <button class="wish-main" data-action="open-card" data-id="${c.id}">
           <span class="thumb">${img ? `<img src="${esc(img)}" loading="lazy" referrerpolicy="no-referrer" alt="">` : ''}</span>
           <span class="wish-info"><strong>${esc(title(c))}</strong>
-            <span class="muted small">${esc([c.rarity, c.setCode, c.number, c.grade !== '未鑑定' ? c.grade : ''].filter(Boolean).join(' · '))}</span></span>
+            <span class="muted small">${esc([c.rarity, c.setCode, c.number, c.grade !== '未鑑定' ? c.grade : '', c.wantRank ? `状態${c.wantRank}以上` : ''].filter(Boolean).join(' · '))}</span></span>
           <span class="wish-prices">
-            <span title="相場（カードラッシュ販売価格）${marketError(c) ? ` ／ ${esc(marketError(c))}` : ''}"><span class="small muted">相場</span> ${yen(mk)}${hit ? ' <span class="badge ok">目標以下</span>' : ''}</span>
-            <span><span class="small muted">目標</span> ${yen(target || null)}</span>
+            <span title="相場（カードラッシュ販売価格）${marketError(c) ? ` ／ ${esc(marketError(c))}` : ''}"><span class="small muted">相場</span> ${yen(mk)}${hit ? ' <span class="badge ok">予算内</span>' : ''}</span>
+            <span><span class="small muted">予算</span> ${yen(target || null)}</span>
           </span>
         </button>
-        <a class="btn small" href="${esc(mercariSearchUrl(c))}" target="_blank" rel="noopener" title="メルカリでカード名を検索（販売中のみ）">メルカリ</a>
+        <a class="btn small" href="${esc(mercariSearchUrl(c))}" target="_blank" rel="noopener" title="メルカリでカード名を検索（販売中・匿名配送・予算以下）">メルカリ</a>
         <button class="btn small" data-action="got-wish" data-id="${c.id}">入手した</button>
       </div>`;
-    }).join('')}</div>` : emptyState('ほしいカードを目標価格と一緒に登録できます。')}`;
+    }).join('')}</div>` : emptyState('ほしいカードを予算・希望の状態と一緒に登録できます。')}`;
 }
 
 // ---------- 取り込み ----------
@@ -2256,7 +2267,8 @@ function renderCardForm() {
           ${isBox(c) ? '' : `<label class="check fld-check"><input type="checkbox" name="sealed" ${c.sealed ? 'checked' : ''}> 未開封<span class="muted small">（透明パック入りのプロモなど）</span></label>`}
           ${isBox(c) ? `<label class="fld"><span>形態</span><select name="boxKind">${['BOX', 'パック', 'デッキ', 'その他'].map((k) => opt(k, k, c.boxKind || 'BOX')).join('')}</select></label>` : ''}
           ${fld(isBox(c) ? '個数' : '枚数', 'quantity', c.quantity, 'number', 'min="1" step="1"')}
-          ${c.status === 'wish' ? fld('目標価格（円）', 'targetPrice', c.targetPrice, 'number', 'min="0"') : fld(isBox(c) ? '購入価格（円・1個）' : '購入価格（円・1枚）', 'purchasePrice', c.purchasePrice, 'number', 'min="0"')}
+          ${c.status === 'wish' ? `<label class="fld"><span>希望の状態</span><select name="wantRank">${opt('', '指定なし', c.wantRank || '')}${WANT_RANKS.map(([k, l]) => opt(k, `${l}以上`, c.wantRank || '')).join('')}</select></label>` : ''}
+          ${c.status === 'wish' ? fld('予算（円・1枚）', 'targetPrice', c.targetPrice, 'number', 'min="0"') : fld(isBox(c) ? '購入価格（円・1個）' : '購入価格（円・1枚）', 'purchasePrice', c.purchasePrice, 'number', 'min="0"')}
           ${c.status === 'wish' ? '' : fld('購入日', 'purchaseDate', c.purchaseDate, 'date')}
           ${c.status === 'wish' ? '' : fld('購入先', 'shop', c.shop, 'text', 'list="dl-shop"')}
           ${fld('タグ（カンマ区切り）', 'tags', (c.tags || []).join(', '))}
@@ -2706,7 +2718,7 @@ document.addEventListener('change', (e) => {
     syncForm();
     if (shouldBeBox(state.editing)) renderCardForm();
   }
-  if (el.closest('#card-form') && /^(cond\.overall|cond\.defects\.|grade$)/.test(el.name) && $('#market-sec')) {
+  if (el.closest('#card-form') && /^(cond\.overall|cond\.defects\.|grade$|wantRank$)/.test(el.name) && $('#market-sec')) {
     syncForm();
     $('#market-sec').outerHTML = marketSectionHtml(state.editing);
   }
