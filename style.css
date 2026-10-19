@@ -134,6 +134,7 @@ code { background: var(--surface2); padding: 1px 5px; border-radius: 4px; font-s
 .btn.ghost { background: transparent; }
 .btn.danger { color: var(--down); border-color: var(--down); }
 .btn.small { padding: 4px 10px; font-size: .82rem; min-height: 32px; }
+a.btn { text-decoration: none; }
 .link { background: none; border: 0; color: var(--accent); font: inherit; cursor: pointer; padding: 0; }
 .icon-btn { background: none; border: 0; color: var(--muted); font-size: 1.3rem; cursor: pointer; width: 32px; height: 32px; border-radius: 6px; }
 .icon-btn:hover { background: var(--surface2); }

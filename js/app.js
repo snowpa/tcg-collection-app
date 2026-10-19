@@ -1527,6 +1527,12 @@ async function gradingSearch(page) {
 
 // ---------- ほしいもの ----------
 
+// カード名でメルカリを検索するURL（販売中の商品に絞る）。カード名が未入力なら表示名で代用する
+function mercariSearchUrl(c) {
+  const keyword = String(c.name || title(c) || '').trim();
+  return `https://jp.mercari.com/search?keyword=${encodeURIComponent(keyword)}&status=on_sale`;
+}
+
 function viewWish() {
   const q = state.wishQ.toLowerCase();
   const list = live('wish').filter((c) => !q || `${c.name} ${c.rawTitle} ${c.setName} ${c.rarity}`.toLowerCase().includes(q))
@@ -1553,6 +1559,7 @@ function viewWish() {
             <span><span class="small muted">目標</span> ${yen(target || null)}</span>
           </span>
         </button>
+        <a class="btn small" href="${esc(mercariSearchUrl(c))}" target="_blank" rel="noopener" title="メルカリでカード名を検索（販売中のみ）">メルカリ</a>
         <button class="btn small" data-action="got-wish" data-id="${c.id}">入手した</button>
       </div>`;
     }).join('')}</div>` : emptyState('ほしいカードを目標価格と一緒に登録できます。')}`;
