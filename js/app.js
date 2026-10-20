@@ -9,7 +9,7 @@ import * as MK from './market.js';
 import { yearFromSetCode, yearFromName, yearFromNameCode } from './sets.js';
 
 // アプリの版（sw.js の CACHE と合わせて更新する。不具合の問い合わせ時に確認用）
-const APP_VERSION = 'v43';
+const APP_VERSION = 'v44';
 
 // ================= 共通ユーティリティ =================
 
@@ -1535,12 +1535,14 @@ async function gradingSearch(page) {
 
 // ---------- ほしいもの ----------
 
-// カード名＋番号でメルカリを検索するURL（販売中・匿名配送の商品に絞る）。カード名が未入力なら表示名で代用する
-// 予算があれば上限価格で絞る。メルカリの商品状態は出品者の主観でばらつくため、状態では絞らない
+// カード名＋番号でメルカリを検索するURL。カード名が未入力なら表示名で代用する
+// 新しい順・販売中・匿名配送・送料込み（出品者負担）で絞り、価格は絞らない
+// メルカリの商品状態は出品者の主観でばらつくため、状態でも絞らない
 function mercariSearchUrl(c) {
   const keyword = [c.name || title(c), c.number].map((s) => String(s || '').trim()).filter(Boolean).join(' ');
-  const params = new URLSearchParams({ keyword, status: 'on_sale', shipping_method: 'ANONYMOUS' });
-  if (num(c.targetPrice) > 0) params.set('price_max', String(num(c.targetPrice)));
+  const params = new URLSearchParams({
+    keyword, sort: 'created_time', order: 'desc', status: 'on_sale', shipping_method: 'ANONYMOUS', shipping_payer_id: '2',
+  });
   return `https://jp.mercari.com/search?${params}`;
 }
 
@@ -1570,7 +1572,7 @@ function viewWish() {
             <span><span class="small muted">予算</span> ${yen(target || null)}</span>
           </span>
         </button>
-        <a class="btn small" href="${esc(mercariSearchUrl(c))}" target="_blank" rel="noopener" title="メルカリでカード名・番号を検索（販売中・匿名配送・予算以下）">メルカリ</a>
+        <a class="btn small" href="${esc(mercariSearchUrl(c))}" target="_blank" rel="noopener" title="メルカリでカード名・番号を検索（新しい順・販売中・匿名配送・送料込み）">メルカリ</a>
         <button class="btn small" data-action="got-wish" data-id="${c.id}">入手した</button>
       </div>`;
     }).join('')}</div>` : emptyState('ほしいカードを予算・希望の状態と一緒に登録できます。')}`;
